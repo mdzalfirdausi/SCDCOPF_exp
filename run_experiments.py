@@ -11,23 +11,25 @@ def main():
     start_idx = task_id * chunk_size
     end_idx = start_idx + chunk_size
 
-    # 2. Define Linux cluster paths (Update this to your exact cluster path)
-    data_dir = "/home/username/SCDCOPF_exp/data/"
-    excel_path = os.path.join(data_dir, "pglib_opf_case118_ieee.xlsx")
-    loads_path = os.path.join(data_dir, "118_ieee_generated_loads.csv")
-    output_dir = os.path.join(data_dir, "output_labels")
+    # 2. Define accurate relative paths based on your directory structure
+    base_data_dir = "../excel_outputs/"
+    gen_data_dir = "./data/"
+    
+    excel_path = os.path.join(base_data_dir, "pglib_opf_case118_ieee.xlsx")
+    loads_path = os.path.join(gen_data_dir, "118_ieee_generated_loads.csv")
+    output_dir = os.path.join(gen_data_dir, "output_labels")
     
     os.makedirs(output_dir, exist_ok=True)
 
     # 3. Load Base Network Data
-    print(f"Node task {task_id}: Loading network topology...")
+    print(f"Node task {task_id}: Loading network topology from {excel_path}...")
     bus_df = pd.read_excel(excel_path, sheet_name='bus')
     gen_df = pd.read_excel(excel_path, sheet_name='gen')
     branch_df = pd.read_excel(excel_path, sheet_name='branch')
     cost_df = pd.read_excel(excel_path, sheet_name='gencost')
 
     # 4. Load only the assigned chunk of the 14,000 load profiles
-    print(f"Node task {task_id}: Loading instances {start_idx} to {end_idx-1}...")
+    print(f"Node task {task_id}: Loading instances {start_idx} to {end_idx-1} from {loads_path}...")
     loads_df = pd.read_csv(loads_path, skiprows=range(1, start_idx + 1), nrows=chunk_size)
 
     # 5. Execution Loop
@@ -58,8 +60,9 @@ def main():
     results_df = pd.DataFrame(results_list)
     
     # Reorder columns to put metadata first
-    cols = ['Instance_ID', 'Termination_Status'] + [c for c in results_df.columns if c not in ['Instance_ID', 'Termination_Status']]
-    results_df = results_df[cols]
+    if not results_df.empty:
+        cols = ['Instance_ID', 'Termination_Status'] + [c for c in results_df.columns if c not in ['Instance_ID', 'Termination_Status']]
+        results_df = results_df[cols]
     
     results_df.to_csv(output_filename, index=False)
     print(f"Node task {task_id}: Successfully exported {len(results_df)} rows to {output_filename}")

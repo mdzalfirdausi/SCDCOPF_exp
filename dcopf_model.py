@@ -1,6 +1,6 @@
 import pyomo.environ as pyo
 import pandas as pd
-
+import math # <-- Add this
 def solve_dc_opf(bus_df, gen_df, branch_df, cost_df, load_vector, baseMVA=100.0):
     # 1. Ensure a fresh model instantiation for every solve iteration
     model = pyo.ConcreteModel()
@@ -34,7 +34,7 @@ def solve_dc_opf(bus_df, gen_df, branch_df, cost_df, load_vector, baseMVA=100.0)
 
     # --- Variables ---
     model.Pg = pyo.Var(model.Gens, bounds=lambda m, i: (pmin[i], pmax[i]))
-    model.Theta = pyo.Var(model.Buses, bounds=(-pyo.math.pi, pyo.math.pi))
+    model.Theta = pyo.Var(model.Buses, bounds=(-math.pi, math.pi)) # <-- Fixed here
     model.Pf = pyo.Var(model.Branches)
 
     # --- Objective: Minimize Generation Cost ---
@@ -139,7 +139,7 @@ def solve_dc_opf(bus_df, gen_df, branch_df, cost_df, load_vector, baseMVA=100.0)
 
     # --- Contingency Network Variables ---
     # Thetas: Post-contingency phase angles for each state s
-    model.Thetas = pyo.Var(model.Contingencies, model.Buses, bounds=(-pyo.math.pi, pyo.math.pi))
+    model.Thetas = pyo.Var(model.Contingencies, model.Buses, bounds=(-math.pi, math.pi)) # <-- Fixed here
     
     # Pfs: Post-contingency branch flows for each state s
     model.Pfs = pyo.Var(model.Contingencies, model.Branches)
@@ -176,8 +176,8 @@ def solve_dc_opf(bus_df, gen_df, branch_df, cost_df, load_vector, baseMVA=100.0)
     model.ref_bus_contingency_eq = pyo.Constraint(model.Contingencies, rule=ref_bus_contingency_rule)
 
     # --- Solve ---
-    solver = pyo.SolverFactory('gurobi')
-    results = solver.solve(model, tee=False)
+    solver = pyo.SolverFactory('gurobi_direct')
+    results = solver.solve(model, tee=True)
 
     # Extract optimal dispatch labels
     optimal_g = {i: pyo.value(model.Pg[i]) * baseMVA for i in model.Gens}
