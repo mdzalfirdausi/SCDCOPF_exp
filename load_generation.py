@@ -41,7 +41,7 @@ def generate_load_profiles(file_path, output_dir, num_instances=14000):
 
 if __name__ == "__main__":
     filepath = "../excel_outputs/pglib_opf_case118_ieee.xlsx"
-    target_directory = r"M:\projects\SCDCOPF_exp\data"
+    target_directory = r"./data"
     
     if os.path.exists(filepath):
         generated_data = generate_load_profiles(filepath, target_directory)
