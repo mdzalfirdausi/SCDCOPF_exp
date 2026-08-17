@@ -1,6 +1,54 @@
 import pyomo.environ as pyo
 import pandas as pd
-import math # <-- Add this
+import math 
+import numpy as np
+
+def build_ptdf(bus_df, branch_df, ref_bus_id=69):
+    """
+    Constructs the Power Transfer Distribution Factor (PTDF) matrix directly from network data.
+    """
+    # 1. Map bus IDs to sequential matrix indices (0 to N-1) to ensure perfect alignment
+    bus_list = sorted(bus_df['bus_i'].tolist())
+    num_buses = len(bus_list)
+    bus_idx = {bus_id: i for i, bus_id in enumerate(bus_list)}
+    
+    num_branches = len(branch_df)
+    
+    # 2. Build incidence matrix A (L x N) and diagonal susceptance Bd (L x L)
+    A = np.zeros((num_branches, num_buses))
+    Bd = np.zeros((num_branches, num_branches))
+    
+    for idx, row in branch_df.iterrows():
+        from_idx = bus_idx[row['bus_i']]
+        to_idx = bus_idx[row['bus_j']]
+        
+        A[idx, from_idx] = 1.0
+        A[idx, to_idx] = -1.0
+        # Susceptance is the inverse of reactance
+        Bd[idx, idx] = 1.0 / row['x']
+        
+    # 3. Build B_bus = A^T * Bd * A
+    B_bus = A.T @ Bd @ A
+    
+    # 4. Remove reference bus to make the matrix invertible
+    ref_idx = bus_idx[ref_bus_id]
+    non_ref_indices = [i for i in range(num_buses) if i != ref_idx]
+    
+    # Extract the reduced B_bus matrix
+    B_bus_reduced = B_bus[np.ix_(non_ref_indices, non_ref_indices)]
+    
+    # Invert the reduced matrix
+    X_bus_reduced = np.linalg.inv(B_bus_reduced)
+    
+    # 5. Reconstruct full X_bus by padding zeros for the reference bus
+    X_bus = np.zeros((num_buses, num_buses))
+    X_bus[np.ix_(non_ref_indices, non_ref_indices)] = X_bus_reduced
+    
+    # 6. Calculate PTDF = Bd * A * X_bus
+    PTDF = Bd @ A @ X_bus
+    
+    return PTDF, bus_list
+
 def solve_dc_opf(bus_df, gen_df, branch_df, cost_df, load_vector, baseMVA=100.0):
     # 1. Ensure a fresh model instantiation for every solve iteration
     model = pyo.ConcreteModel()
