@@ -224,7 +224,7 @@ def solve_dc_opf(bus_df, gen_df, branch_df, cost_df, load_vector, baseMVA=100.0)
     model.ref_bus_contingency_eq = pyo.Constraint(model.Contingencies, rule=ref_bus_contingency_rule)
 
     # --- Solve ---
-    solver = pyo.SolverFactory('gurobi_direct')
+    solver = pyo.SolverFactory('gurobi')
     results = solver.solve(model, tee=True)
 
     # Extract optimal dispatch labels
