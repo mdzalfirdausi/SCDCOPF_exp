@@ -26,8 +26,12 @@ def main():
     
     excel_path = os.path.join(base_data_dir, f"{case_name}.xlsx")
     loads_path = os.path.join(gen_data_dir, f"{case_name}_generated_loads.csv")
-    output_dir = os.path.join(gen_data_dir, "output_labels")
-    
+    output_dir = os.path.join(
+    gen_data_dir,
+    "output_labels",
+    case_name
+    )
+
     os.makedirs(output_dir, exist_ok=True)
 
     # 4. Load Base Network Data
