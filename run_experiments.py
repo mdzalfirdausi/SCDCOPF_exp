@@ -24,7 +24,7 @@ def main():
     base_data_dir = "../excel_outputs/"
     gen_data_dir = "./data/"
     
-    excel_path = os.path.join(base_data_dir, f"pglib_opf_case{case_name}.xlsx")
+    excel_path = os.path.join(base_data_dir, f"{case_name}.xlsx")
     loads_path = os.path.join(gen_data_dir, f"{case_name}_generated_loads.csv")
     output_dir = os.path.join(gen_data_dir, "output_labels")
     
