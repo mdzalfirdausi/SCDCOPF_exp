@@ -15,7 +15,7 @@ def main():
 
     # 2. Handle Slurm Array Indexing (Default to chunk 0 if running locally)
     task_id = int(os.environ.get("SLURM_ARRAY_TASK_ID", 0))
-    chunk_size = 100
+    chunk_size = 10
     
     start_idx = task_id * chunk_size
     end_idx = start_idx + chunk_size

@@ -6,16 +6,13 @@
 #SBATCH --output=/dev/null
 #SBATCH --error=/dev/null
 
-# Maximum allowed by the main partition
-#SBATCH --time=7-00:00:00
+#SBATCH --time=2-00:00:00
 
-# One CPU per independent Python process
 #SBATCH --cpus-per-task=1
+#SBATCH --mem=2G
 
-# Start conservatively; increase after measuring actual usage
-#SBATCH --mem=8G
-
-#SBATCH --array=0-9
+# 1000 scenarios / 10 scenarios per task = 100 tasks
+#SBATCH --array=0-99
 
 LOG_DIR="logs/${SLURM_ARRAY_JOB_ID}"
 mkdir -p "$LOG_DIR"
