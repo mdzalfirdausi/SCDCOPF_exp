@@ -2,7 +2,7 @@
 
 #SBATCH --job-name=scdcopf
 #SBATCH --partition=cpu_x440
-
+#SBATCH --exclude=node0032
 #SBATCH --output=/dev/null
 #SBATCH --error=/dev/null
 
@@ -46,7 +46,7 @@ done
 # --case is mandatory
 if [[ -z "$CASE_NAME" ]]; then
     echo "ERROR: --case is required."
-    echo "Usage: sbatch submit_iss.sh --case <case_name>"
+    echo "Usage: sbatch submit_hpc.sh --case <case_name>"
     exit 1
 fi
 
@@ -66,18 +66,41 @@ echo "============================================"
 
 
 # =========================================================
-# 3. CONDA ENVIRONMENT
+# 3. ENVIRONMENT
 # =========================================================
 
-# Initialize Conda explicitly for non-interactive Slurm shells
-source "$(conda info --base)/etc/profile.d/conda.sh"
+# Load HPC Gurobi configuration
+module purge
+module load gurobi/13.0.1
 
+# Initialize Conda
+source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate pytorch
 
-echo "Conda environment: $CONDA_DEFAULT_ENV"
 echo "Python: $(which python)"
 python --version
 
+echo "GRB_LICENSE_FILE: $GRB_LICENSE_FILE"
+echo "GUROBI_HOME: $GUROBI_HOME"
+
+# Verify Gurobi before starting experiments
+python -c "
+import gurobipy as gp
+print('gurobipy version:', gp.gurobi.version())
+m = gp.Model()
+print('Gurobi license: OK')
+" || {
+    echo "ERROR: Gurobi license check failed."
+    exit 1
+}
+
+echo "============================================"
+echo "Environment"
+echo "============================================"
+echo "Conda environment: $CONDA_DEFAULT_ENV"
+echo "Python: $(which python)"
+echo "GRB_LICENSE_FILE: $GRB_LICENSE_FILE"
+echo "GUROBI_HOME: $GUROBI_HOME"
 
 # =========================================================
 # 4. PREVENT EACH JOB FROM SPAWNING EXTRA CPU THREADS
