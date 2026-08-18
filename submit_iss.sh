@@ -1,54 +1,110 @@
 #!/bin/bash
-#SBATCH --job-name=scdcopf_data
-#SBATCH --output=logs/array_%A_task_%a.out  # Standard output log
-#SBATCH --error=logs/array_%A_task_%a.err   # Standard error log
-#SBATCH --time=02:00:00                     # Max time per node (e.g., 2 hours)
-#SBATCH --mem=4G                            # RAM required per node
-#SBATCH --cpus-per-task=1                   # CPU cores required per node
-#SBATCH --array=0-139                       # Splitting into 140 nodes
+
+#SBATCH --job-name=scdcopf
+#SBATCH --partition=main
+
+#SBATCH --output=/dev/null
+#SBATCH --error=/dev/null
+
+# Maximum allowed by the main partition
+#SBATCH --time=7-00:00:00
+
+# One CPU per independent Python process
+#SBATCH --cpus-per-task=1
+
+# Start conservatively; increase after measuring actual usage
+#SBATCH --mem=8G
+
+# 140 experiments, maximum 16 running simultaneously
+#SBATCH --array=0-139%16
+
+LOG_DIR="logs/${SLURM_ARRAY_JOB_ID}"
+mkdir -p "$LOG_DIR"
+
+exec > "${LOG_DIR}/${SLURM_ARRAY_TASK_ID}.out" \
+     2> "${LOG_DIR}/${SLURM_ARRAY_TASK_ID}.err"
 
 # =========================================================
-# 1. ARGUMENT PARSING
+# 1. CASE / ARGUMENT PARSING
 # =========================================================
-# Default case if none is provided
-CASE_NAME="pglib_opf_case118_ieee"
 
-# Parse arguments passed from the sbatch command
+CASE_NAME=""
+
 while [[ "$#" -gt 0 ]]; do
-    case $1 in
-        --case) CASE_NAME="$2"; shift ;;
-        *) echo "Unknown parameter passed: $1"; exit 1 ;;
+    case "$1" in
+        --case)
+            if [[ -z "${2:-}" ]]; then
+                echo "ERROR: --case requires a value."
+                exit 1
+            fi
+            CASE_NAME="$2"
+            shift 2
+            ;;
+        *)
+            echo "ERROR: Unknown parameter: $1"
+            exit 1
+            ;;
     esac
-    shift
 done
 
-echo "Starting Slurm Array Task ID: $SLURM_ARRAY_TASK_ID"
-echo "Target Case: $CASE_NAME"
-
-# =========================================================
-# 2. CROSS-HPC ENVIRONMENT LOADER
-# =========================================================
-# Check the hostname of the current cluster node to load the right modules
-HOSTNAME=$(hostname)
-
-if [[ "$HOSTNAME" == *"hpc1_keyword"* ]]; then
-    # Settings for your first HPC
-    echo "Detected HPC 1..."
-    source activate pytorch
-
-elif [[ "$HOSTNAME" == *"hpc2_keyword"* ]]; then
-    # Settings for your second HPC
-    echo "Detected HPC 2..."
-    conda activate pytorch
-
-else
-    # Fallback if hostname isn't recognized (assumes conda is in ~/.bashrc)
-    echo "Unknown cluster node: $HOSTNAME. Using fallback Conda initialization..."
-    source ~/.bashrc
-    conda activate pytorch
+# --case is mandatory
+if [[ -z "$CASE_NAME" ]]; then
+    echo "ERROR: --case is required."
+    echo "Usage: sbatch submit_iss.sh --case <case_name>"
+    exit 1
 fi
 
 # =========================================================
-# 3. EXECUTE THE PYTHON SCRIPT
+# 2. JOB INFORMATION
 # =========================================================
-python run_experiments.py --case $CASE_NAME
+
+echo "============================================"
+echo "Job ID:        $SLURM_JOB_ID"
+echo "Array Job ID:  $SLURM_ARRAY_JOB_ID"
+echo "Array Task ID: $SLURM_ARRAY_TASK_ID"
+echo "Node:          $(hostname)"
+echo "CPUs:          $SLURM_CPUS_PER_TASK"
+echo "Case:          $CASE_NAME"
+echo "Start time:    $(date)"
+echo "============================================"
+
+
+# =========================================================
+# 3. CONDA ENVIRONMENT
+# =========================================================
+
+# Initialize Conda explicitly for non-interactive Slurm shells
+source "$(conda info --base)/etc/profile.d/conda.sh"
+
+conda activate pytorch
+
+echo "Conda environment: $CONDA_DEFAULT_ENV"
+echo "Python: $(which python)"
+python --version
+
+
+# =========================================================
+# 4. PREVENT EACH JOB FROM SPAWNING EXTRA CPU THREADS
+# =========================================================
+
+export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
+export MKL_NUM_THREADS=$SLURM_CPUS_PER_TASK
+export OPENBLAS_NUM_THREADS=$SLURM_CPUS_PER_TASK
+export NUMEXPR_NUM_THREADS=$SLURM_CPUS_PER_TASK
+
+
+# =========================================================
+# 5. RUN
+# =========================================================
+
+python run_experiments.py \
+    --case "$CASE_NAME"
+
+EXIT_CODE=$?
+
+echo "============================================"
+echo "Finished: $(date)"
+echo "Exit code: $EXIT_CODE"
+echo "============================================"
+
+exit $EXIT_CODE
