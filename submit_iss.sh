@@ -15,7 +15,6 @@
 # Start conservatively; increase after measuring actual usage
 #SBATCH --mem=8G
 
-# 140 experiments, maximum 16 running simultaneously
 #SBATCH --array=0-9
 
 LOG_DIR="logs/${SLURM_ARRAY_JOB_ID}"

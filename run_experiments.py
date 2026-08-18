@@ -49,8 +49,8 @@ def main():
     # 6. Execution Loop
     results_list = []
     
-    for idx, row in loads_df.iterrows():
-        global_idx = start_idx + idx
+    for local_idx, row in loads_df.reset_index(drop=True).iterrows():
+        global_idx = start_idx + local_idx
         
         load_vector = {bus_id: row[f"Bus_{bus_id}_Pd"] for bus_id in bus_df['bus_i']}
         
