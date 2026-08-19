@@ -15,7 +15,7 @@ def main():
 
     # 2. Handle Slurm Array Indexing (Default to chunk 0 if running locally)
     task_id = int(os.environ.get("SLURM_ARRAY_TASK_ID", 0))
-    chunk_size = 10
+    chunk_size = 100
     
     start_idx = task_id * chunk_size
     end_idx = start_idx + chunk_size
@@ -26,8 +26,12 @@ def main():
     
     excel_path = os.path.join(base_data_dir, f"{case_name}.xlsx")
     loads_path = os.path.join(gen_data_dir, f"{case_name}_generated_loads.csv")
-    output_dir = os.path.join(gen_data_dir, "output_labels")
-    
+    output_dir = os.path.join(
+    gen_data_dir,
+    "output_labels",
+    case_name
+    )
+
     os.makedirs(output_dir, exist_ok=True)
 
     # 4. Load Base Network Data
