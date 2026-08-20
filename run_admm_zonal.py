@@ -365,6 +365,75 @@ def run_distributed_admm(case, zone1_buses, zone2_buses, max_iters=100, tol=5e-3
 
     return model_z1, model_z2
 
+def save_admm_results(model_z1, model_z2, case_name, output_dir="../excel_outputs"):
+    """
+    Extracts variables from both zonal models, merges them, 
+    and saves to an Excel file with multiple sheets.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    output_path = os.path.join(output_dir, f"{case_name}_admm_results.xlsx")
+    
+    print(f"\nExtracting results to {output_path}...")
+
+    # --- 1. Extract Generator Data (Pg_base, Pg_k, xk) ---
+    gen_data = []
+    for m in [model_z1, model_z2]:
+        for i in m.Gens:
+            row = {
+                'Zone': m.name,
+                'Gen_ID': i,
+                'Pg_base': pyo.value(m.Pg_base[i], exception=False)
+            }
+            # Add contingency generation and binary limits
+            for k in m.Kg_Global:
+                row[f'Pg_k_{k}'] = pyo.value(m.Pg_k[k, i], exception=False)
+                row[f'xk_{k}'] = pyo.value(m.xk[k, i], exception=False)
+            gen_data.append(row)
+            
+    df_gen = pd.DataFrame(gen_data).sort_values('Gen_ID')
+
+    # --- 2. Extract Global Signal (zk) ---
+    # Since zk reached consensus, we only need to pull it from Zone 1
+    zk_data = []
+    for k in model_z1.Kg_Global:
+        zk_data.append({
+            'Contingency_k': k,
+            'zk_signal': pyo.value(model_z1.zk[k], exception=False)
+        })
+    df_zk = pd.DataFrame(zk_data)
+
+    # --- 3. Extract Branch Flows (Pf_base) ---
+    # We use a set to avoid duplicating tie-lines that appear in both models
+    branch_data = {}
+    for m in [model_z1, model_z2]:
+        for l in m.AllBranches:
+            if l not in branch_data:
+                branch_data[l] = {
+                    'Branch_ID': l,
+                    'Pf_base': pyo.value(m.Pf_base[l], exception=False)
+                }
+    df_branch = pd.DataFrame(list(branch_data.values())).sort_values('Branch_ID')
+
+    # --- 4. Extract Phase Angles (Va_base) ---
+    bus_data = {}
+    for m in [model_z1, model_z2]:
+        for b in m.AllBuses:
+            if b not in bus_data:
+                bus_data[b] = {
+                    'Bus_ID': b,
+                    'Va_base_rad': pyo.value(m.Va_base[b], exception=False)
+                }
+    df_bus = pd.DataFrame(list(bus_data.values())).sort_values('Bus_ID')
+
+    # --- Save to Excel ---
+    with pd.ExcelWriter(output_path) as writer:
+        df_gen.to_excel(writer, sheet_name='Generators', index=False)
+        df_zk.to_excel(writer, sheet_name='Global_Signal', index=False)
+        df_branch.to_excel(writer, sheet_name='Branch_Flows', index=False)
+        df_bus.to_excel(writer, sheet_name='Phase_Angles', index=False)
+        
+    print("Results successfully saved!")
+
 # ==========================================
 # 4. MAIN EXECUTION BLOCK 
 # ==========================================
@@ -393,3 +462,5 @@ if __name__ == "__main__":
     zone2 = list(range(16, 31))  
     
     model_z1, model_z2 = run_distributed_admm(case, zone1, zone2, max_iters=1000)
+
+    save_admm_results(model_z1, model_z2, case_name)
