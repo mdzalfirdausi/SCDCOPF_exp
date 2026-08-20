@@ -365,12 +365,18 @@ def run_distributed_admm(case, zone1_buses, zone2_buses, max_iters=100, tol=5e-3
 
     return model_z1, model_z2
 
-def save_admm_results(model_z1, model_z2, case_name, output_dir="../excel_outputs"):
+def save_admm_results(model_z1, model_z2, case_name, base_dir="data"):
     """
     Extracts variables from both zonal models, merges them, 
-    and saves to an Excel file with multiple sheets.
+    and saves to an Excel file with multiple sheets in a specific subdirectory.
     """
+    # 1. Define the specific subdirectory path
+    output_dir = os.path.join(base_dir, "admm_result")
+    
+    # 2. Create the directories if they do not exist
     os.makedirs(output_dir, exist_ok=True)
+    
+    # 3. Construct the final file path
     output_path = os.path.join(output_dir, f"{case_name}_admm_results.xlsx")
     
     print(f"\nExtracting results to {output_path}...")
@@ -432,8 +438,7 @@ def save_admm_results(model_z1, model_z2, case_name, output_dir="../excel_output
         df_branch.to_excel(writer, sheet_name='Branch_Flows', index=False)
         df_bus.to_excel(writer, sheet_name='Phase_Angles', index=False)
         
-    print("Results successfully saved!")
-
+    print(f"Success: Results securely saved in the {output_dir} folder!")
 # ==========================================
 # 4. MAIN EXECUTION BLOCK 
 # ==========================================
