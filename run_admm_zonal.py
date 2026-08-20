@@ -318,21 +318,42 @@ def run_distributed_admm(case, zone1_buses, zone2_buses, max_iters=100, tol=5e-3
         print(f"--- Iteration {itr} --- Primal Residual (Va & zk): {primal_residual:.6f}")
         
         # FIX: The "Relax-and-Fix" Heuristic. 
-        # When we hit the integer-chattering floor (tol=5e-3), we break.
         if primal_residual <= tol:
             print(f"\nMILP ADMM Converged to integer floor ({primal_residual:.6f} <= {tol}).")
             
             # Lock the binary variables to their current optimal state
             print("Locking binary variables and running final continuous polishing pass...")
             for k in global_Kg:
+                # Safely fix Zone 1 variables
                 for i in model_z1.Gens:
-                    model_z1.xk[k, i].fix(round(pyo.value(model_z1.xk[k, i])))
+                    val_z1 = pyo.value(model_z1.xk[k, i], exception=False)
+                    model_z1.xk[k, i].fix(round(val_z1) if val_z1 is not None else 0)
+                
+                # Safely fix Zone 2 variables
                 for i in model_z2.Gens:
-                    model_z2.xk[k, i].fix(round(pyo.value(model_z2.xk[k, i])))
+                    val_z2 = pyo.value(model_z2.xk[k, i], exception=False)
+                    model_z2.xk[k, i].fix(round(val_z2) if val_z2 is not None else 0)
                     
             # Run one final continuous pass to collapse the residual perfectly
             solver.solve(model_z1, tee=False)
             solver.solve(model_z2, tee=False)
+            
+            # Recalculate final polished residual to prove it worked
+            for b in boundary_buses:
+                Va_z1['base', b] = pyo.value(model_z1.Va_base[b])
+                Va_z2['base', b] = pyo.value(model_z2.Va_base[b])
+                for k in global_Kg:
+                    Va_z1[k, b] = pyo.value(model_z1.Va_k[k, b])
+                    Va_z2[k, b] = pyo.value(model_z2.Va_k[k, b])
+            for k in global_Kg:
+                zk_z1[k] = pyo.value(model_z1.zk[k])
+                zk_z2[k] = pyo.value(model_z2.zk[k])
+                
+            res_va = sum((Va_z1[k, b] - Va_z2[k, b])**2 for k in kg_and_base for b in boundary_buses)
+            res_zk = sum((zk_z1[k] - zk_z2[k])**2 for k in global_Kg)
+            final_residual = np.sqrt(res_va + res_zk)
+            
+            print(f"Final Polished Residual: {final_residual:.6f}")
             print("D-SCDCOPF Complete!")
             break
             
@@ -371,4 +392,4 @@ if __name__ == "__main__":
     zone1 = list(range(1, 16))   
     zone2 = list(range(16, 31))  
     
-    model_z1, model_z2 = run_distributed_admm(case, zone1, zone2, max_iters=10000)
+    model_z1, model_z2 = run_distributed_admm(case, zone1, zone2, max_iters=1000)
