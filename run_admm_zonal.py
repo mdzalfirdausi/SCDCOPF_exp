@@ -371,4 +371,4 @@ if __name__ == "__main__":
     zone1 = list(range(1, 16))   
     zone2 = list(range(16, 31))  
     
-    model_z1, model_z2 = run_distributed_admm(case, zone1, zone2, max_iters=1000)
+    model_z1, model_z2 = run_distributed_admm(case, zone1, zone2, max_iters=10000)
