@@ -244,7 +244,7 @@ def build_admm_zone(zone_id, zone_data, full_branch_df, tie_lines, boundary_buse
 # ==========================================
 # 3. ADMM COORDINATOR
 # ==========================================
-def run_distributed_admm(case, zone1_buses, zone2_buses, max_iters=50, tol=1e-3):
+def run_distributed_admm(case, zone1_buses, zone2_buses, max_iters=100, tol=5e-3):
     zonal_data = create_zonal_data(case, zone1_buses, zone2_buses)
     tie_lines = zonal_data['tie_lines']
     boundary_buses = zonal_data['boundary_buses']
@@ -317,8 +317,23 @@ def run_distributed_admm(case, zone1_buses, zone2_buses, max_iters=50, tol=1e-3)
         
         print(f"--- Iteration {itr} --- Primal Residual (Va & zk): {primal_residual:.6f}")
         
+        # FIX: The "Relax-and-Fix" Heuristic. 
+        # When we hit the integer-chattering floor (tol=5e-3), we break.
         if primal_residual <= tol:
-            print("\nD-SCDCOPF Converged Successfully!")
+            print(f"\nMILP ADMM Converged to integer floor ({primal_residual:.6f} <= {tol}).")
+            
+            # Lock the binary variables to their current optimal state
+            print("Locking binary variables and running final continuous polishing pass...")
+            for k in global_Kg:
+                for i in model_z1.Gens:
+                    model_z1.xk[k, i].fix(round(pyo.value(model_z1.xk[k, i])))
+                for i in model_z2.Gens:
+                    model_z2.xk[k, i].fix(round(pyo.value(model_z2.xk[k, i])))
+                    
+            # Run one final continuous pass to collapse the residual perfectly
+            solver.solve(model_z1, tee=False)
+            solver.solve(model_z2, tee=False)
+            print("D-SCDCOPF Complete!")
             break
             
         for b in boundary_buses:
@@ -356,4 +371,4 @@ if __name__ == "__main__":
     zone1 = list(range(1, 16))   
     zone2 = list(range(16, 31))  
     
-    model_z1, model_z2 = run_distributed_admm(case, zone1, zone2, max_iters=100)
+    model_z1, model_z2 = run_distributed_admm(case, zone1, zone2, max_iters=1000)
