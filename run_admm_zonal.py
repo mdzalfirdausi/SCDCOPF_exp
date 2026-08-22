@@ -244,7 +244,7 @@ def build_admm_zone(zone_id, zone_data, full_branch_df, tie_lines, boundary_buse
     return model
 
 # ==========================================
-# 3. ADMM COORDINATOR (PARALLELIZED)
+# 3. ADMM COORDINATOR (SAFE MULTI-CORE)
 # ==========================================
 def run_distributed_admm(case, zone1_buses, zone2_buses, max_iters=100, tol=5e-3):
     zonal_data = create_zonal_data(case, zone1_buses, zone2_buses)
@@ -261,17 +261,12 @@ def run_distributed_admm(case, zone1_buses, zone2_buses, max_iters=100, tol=5e-3
     model_z2 = build_admm_zone(2, zonal_data['zone2'], case['branch'], tie_lines, boundary_buses, not is_ref_z1, ref_bus)
     
     # --- HARDWARE OPTIMIZATION ---
-    # Divide total CPU cores evenly between the two zones
+    import multiprocessing
     total_cores = multiprocessing.cpu_count()
-    threads_per_zone = max(1, total_cores // 2)
-    print(f"\nHardware Allocation: {total_cores} total cores detected. Allocating {threads_per_zone} threads per zone.")
+    print(f"\nHardware Allocation: {total_cores} total cores detected. Gurobi will use ALL cores per solve.")
 
-    def solve_zone(model):
-        """Dedicated solver instance for thread safety"""
-        solver = pyo.SolverFactory('gurobi_direct')
-        solver.options['Threads'] = threads_per_zone
-        solver.solve(model, tee=False)
-        return True
+    solver = pyo.SolverFactory('gurobi_direct')
+    solver.options['Threads'] = total_cores  # Unleash all 32 cores on the active zone
     
     # ADMM States
     u_va = {(k, b): 0.0 for k in kg_and_base for b in boundary_buses} 
@@ -284,37 +279,75 @@ def run_distributed_admm(case, zone1_buses, zone2_buses, max_iters=100, tol=5e-3
     
     rho = case['rho_ADMM']
     
-    print("Starting Parallel ADMM Loop...")
-    
-    # Keep the thread pool open for the duration of the ADMM loop
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        for itr in range(1, max_iters + 1):
-            
-            # --- A. Update Target Parameters ---
-            for b in boundary_buses:
-                for k in kg_and_base:
-                    model_z1.Va_target[k, b].set_value(Va_z2[k, b])
-                    model_z1.u_va[k, b].set_value(u_va[k, b])
-                    
-                    model_z2.Va_target[k, b].set_value(Va_z1[k, b])
-                    model_z2.u_va[k, b].set_value(u_va[k, b]) 
-
+    print("\nStarting ADMM Loop...")
+    for itr in range(1, max_iters + 1):
+        
+        # We turn on 'tee=True' just for the very first iteration so you can verify 
+        # that Gurobi is actually launching and not hanging on a license check.
+        show_log = True if itr == 1 else False
+        
+        # --- A. Update Zone 1 ---
+        for b in boundary_buses:
+            for k in kg_and_base:
+                model_z1.Va_target[k, b].set_value(Va_z2[k, b])
+                model_z1.u_va[k, b].set_value(u_va[k, b])
+        for k in global_Kg:
+            model_z1.neighbor_zk[k].set_value(zk_z2[k])
+            model_z1.u_zk[k].set_value(u_zk[k])
+        
+        if show_log: print("\n--- Launching Zone 1 Solve (Check Gurobi Log) ---")
+        solver.solve(model_z1, tee=show_log)
+        
+        for b in boundary_buses:
+            Va_z1['base', b] = pyo.value(model_z1.Va_base[b])
             for k in global_Kg:
-                model_z1.neighbor_zk[k].set_value(zk_z2[k])
-                model_z1.u_zk[k].set_value(u_zk[k])
+                Va_z1[k, b] = pyo.value(model_z1.Va_k[k, b])
+        for k in global_Kg:
+            zk_z1[k] = pyo.value(model_z1.zk[k])
+            
+        # --- B. Update Zone 2 ---
+        for b in boundary_buses:
+            for k in kg_and_base:
+                model_z2.Va_target[k, b].set_value(Va_z1[k, b])
+                model_z2.u_va[k, b].set_value(u_va[k, b]) 
+        for k in global_Kg:
+            model_z2.neighbor_zk[k].set_value(zk_z1[k])
+            model_z2.u_zk[k].set_value(u_zk[k])
+            
+        if show_log: print("\n--- Launching Zone 2 Solve (Check Gurobi Log) ---")
+        solver.solve(model_z2, tee=show_log)
+        
+        for b in boundary_buses:
+            Va_z2['base', b] = pyo.value(model_z2.Va_base[b])
+            for k in global_Kg:
+                Va_z2[k, b] = pyo.value(model_z2.Va_k[k, b])
+        for k in global_Kg:
+            zk_z2[k] = pyo.value(model_z2.zk[k])
+
+        # --- C. Check Convergence & Update Multipliers ---
+        res_va = sum((Va_z1[k, b] - Va_z2[k, b])**2 for k in kg_and_base for b in boundary_buses)
+        res_zk = sum((zk_z1[k] - zk_z2[k])**2 for k in global_Kg)
+        primal_residual = np.sqrt(res_va + res_zk)
+        
+        print(f"--- Iteration {itr} --- Primal Residual (Va & zk): {primal_residual:.6f}")
+        
+        # The "Relax-and-Fix" Heuristic
+        if primal_residual <= tol:
+            print(f"\nMILP ADMM Converged to integer floor ({primal_residual:.6f} <= {tol}).")
+            print("Locking binary variables and running final continuous polishing pass...")
+            
+            for k in global_Kg:
+                for i in model_z1.Gens:
+                    val_z1 = pyo.value(model_z1.xk[k, i], exception=False)
+                    model_z1.xk[k, i].fix(round(val_z1) if val_z1 is not None else 0)
                 
-                model_z2.neighbor_zk[k].set_value(zk_z1[k])
-                model_z2.u_zk[k].set_value(u_zk[k])
+                for i in model_z2.Gens:
+                    val_z2 = pyo.value(model_z2.xk[k, i], exception=False)
+                    model_z2.xk[k, i].fix(round(val_z2) if val_z2 is not None else 0)
+                    
+            solver.solve(model_z1, tee=False)
+            solver.solve(model_z2, tee=False)
             
-            # --- B. CONCURRENT SOLVE ---
-            future_z1 = executor.submit(solve_zone, model_z1)
-            future_z2 = executor.submit(solve_zone, model_z2)
-            
-            # Wait for both zones to finish solving
-            future_z1.result()
-            future_z2.result()
-            
-            # --- C. Extract Variables ---
             for b in boundary_buses:
                 Va_z1['base', b] = pyo.value(model_z1.Va_base[b])
                 Va_z2['base', b] = pyo.value(model_z2.Va_base[b])
@@ -324,57 +357,20 @@ def run_distributed_admm(case, zone1_buses, zone2_buses, max_iters=100, tol=5e-3
             for k in global_Kg:
                 zk_z1[k] = pyo.value(model_z1.zk[k])
                 zk_z2[k] = pyo.value(model_z2.zk[k])
-
-            # --- D. Check Convergence & Update Multipliers ---
+                
             res_va = sum((Va_z1[k, b] - Va_z2[k, b])**2 for k in kg_and_base for b in boundary_buses)
             res_zk = sum((zk_z1[k] - zk_z2[k])**2 for k in global_Kg)
-            primal_residual = np.sqrt(res_va + res_zk)
+            final_residual = np.sqrt(res_va + res_zk)
             
-            print(f"--- Iteration {itr} --- Primal Residual (Va & zk): {primal_residual:.6f}")
+            print(f"Final Polished Residual: {final_residual:.6f}")
+            print("D-SCDCOPF Complete!")
+            break
             
-            # The "Relax-and-Fix" Heuristic
-            if primal_residual <= tol:
-                print(f"\nMILP ADMM Converged to integer floor ({primal_residual:.6f} <= {tol}).")
-                print("Locking binary variables and running final continuous polishing pass...")
-                
-                for k in global_Kg:
-                    for i in model_z1.Gens:
-                        val_z1 = pyo.value(model_z1.xk[k, i], exception=False)
-                        model_z1.xk[k, i].fix(round(val_z1) if val_z1 is not None else 0)
-                    
-                    for i in model_z2.Gens:
-                        val_z2 = pyo.value(model_z2.xk[k, i], exception=False)
-                        model_z2.xk[k, i].fix(round(val_z2) if val_z2 is not None else 0)
-                        
-                # Final concurrent polishing pass
-                f1 = executor.submit(solve_zone, model_z1)
-                f2 = executor.submit(solve_zone, model_z2)
-                f1.result()
-                f2.result()
-                
-                for b in boundary_buses:
-                    Va_z1['base', b] = pyo.value(model_z1.Va_base[b])
-                    Va_z2['base', b] = pyo.value(model_z2.Va_base[b])
-                    for k in global_Kg:
-                        Va_z1[k, b] = pyo.value(model_z1.Va_k[k, b])
-                        Va_z2[k, b] = pyo.value(model_z2.Va_k[k, b])
-                for k in global_Kg:
-                    zk_z1[k] = pyo.value(model_z1.zk[k])
-                    zk_z2[k] = pyo.value(model_z2.zk[k])
-                    
-                res_va = sum((Va_z1[k, b] - Va_z2[k, b])**2 for k in kg_and_base for b in boundary_buses)
-                res_zk = sum((zk_z1[k] - zk_z2[k])**2 for k in global_Kg)
-                final_residual = np.sqrt(res_va + res_zk)
-                
-                print(f"Final Polished Residual: {final_residual:.6f}")
-                print("D-SCDCOPF Complete!")
-                break
-                
-            for b in boundary_buses:
-                for k in kg_and_base:
-                    u_va[k, b] = u_va[k, b] + rho * (Va_z1[k, b] - Va_z2[k, b])
-            for k in global_Kg:
-                u_zk[k] = u_zk[k] + rho * (zk_z1[k] - zk_z2[k])
+        for b in boundary_buses:
+            for k in kg_and_base:
+                u_va[k, b] = u_va[k, b] + rho * (Va_z1[k, b] - Va_z2[k, b])
+        for k in global_Kg:
+            u_zk[k] = u_zk[k] + rho * (zk_z1[k] - zk_z2[k])
 
     return model_z1, model_z2
 
