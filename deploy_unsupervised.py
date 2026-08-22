@@ -216,16 +216,11 @@ if __name__ == "__main__":
     
     # 4. Load Real-Time Load Scenarios
     print("Injecting Load Scenario...")
-    csv_path = 'data/118_ieee_generated_loads.csv'
-    if os.path.exists(csv_path):
-        load_data = pd.read_csv(csv_path).values / baseMVA
-        # Grab the first scenario (row 0)
-        Pd_z1_np = load_data[0:1, :num_buses_z1]
-        Pd_z2_np = load_data[0:1, num_buses_z1:]
-    else:
-        print("CSV not found. Using mock load data.")
-        Pd_z1_np = np.random.rand(1, num_buses_z1) * 1.5
-        Pd_z2_np = np.random.rand(1, num_buses_z2) * 1.5
+    csv_path = 'data/pglib_opf_case118_ieee_generated_loads.csv'
+    load_data = pd.read_csv(csv_path).values / baseMVA
+    # Grab the first scenario (row 0)
+    Pd_z1_np = load_data[0:1, :num_buses_z1]
+    Pd_z2_np = load_data[0:1, num_buses_z1:]
         
     Pd_z1 = torch.tensor(Pd_z1_np, dtype=torch.float32).to(device)
     Pd_z2 = torch.tensor(Pd_z2_np, dtype=torch.float32).to(device)
