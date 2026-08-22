@@ -6,14 +6,13 @@
 #SBATCH --output=/dev/null
 #SBATCH --error=/dev/null
 
-#SBATCH --time=2-00:00:00
+#SBATCH --time=08:00:00
 
 # Allocate 16 cores per task to accelerate Gurobi's ADMM subproblem solving
 #SBATCH --cpus-per-task=16
-#SBATCH --mem=8G
+#SBATCH --mem=16G
 
 # 1000 scenarios / 10 scenarios per task = 100 tasks
-# %20 limits the job to 20 concurrent tasks to protect Gurobi license limits
 #SBATCH --array=0-99
 
 LOG_DIR="logs/${SLURM_ARRAY_JOB_ID}"
@@ -85,16 +84,17 @@ conda activate pytorch
 echo "Python: $(which python)"
 python --version
 
-# Verify Gurobi before starting experiments
-python -c "
-import gurobipy as gp
-print('gurobipy version:', gp.gurobi.version())
-m = gp.Model()
-print('Gurobi license: OK')
-" || {
-    echo "ERROR: Gurobi license check failed."
-    exit 1
-}
+echo "Waiting for Gurobi license..."
+for i in {1..20}; do
+    python -c "import gurobipy as gp; m = gp.Model()" 2>/dev/null && break
+    echo "Attempt $i: Token server full or busy. Sleeping 60s..."
+    sleep 60
+    if [ $i -eq 20 ]; then
+        echo "ERROR: Could not get Gurobi license after 20 minutes."
+        exit 1
+    fi
+done
+echo "Gurobi license: OK"
 
 # =========================================================
 # 4. PREVENT EACH JOB FROM SPAWNING EXTRA CPU THREADS
