@@ -192,9 +192,9 @@ def train_agent(zone_name, z_data, load_data_np, num_boundaries, num_global_kg, 
 # 5. MAIN EXECUTION BLOCK
 # ==========================================
 if __name__ == "__main__":
-    case_name = 'case118'
+    case_name = 'pglib_opf_case118_ieee'
     case_path = f'../excel_outputs/{case_name}.xlsx'
-    csv_path = 'data/118_ieee_generated_loads.csv'
+    csv_path = 'data/pglib_opf_case118_ieee_generated_loads.csv'
     rho_ADMM = 10000.0
     
     print(f"Loading Base Excel Data from {case_path}...")

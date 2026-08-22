@@ -47,8 +47,11 @@ def create_zonal_data(case, zone1_buses, zone2_buses):
 class Zone_ADMM_Net(nn.Module):
     def __init__(self, num_local_buses, num_local_gens, num_boundaries, num_global_kg, Pmax, Pmin):
         super(Zone_ADMM_Net, self).__init__()
-        self.Pmax = torch.tensor(Pmax, dtype=torch.float32)
-        self.Pmin = torch.tensor(Pmin, dtype=torch.float32)
+        
+        # FIX: Registering these as buffers ensures they automatically move to the GPU
+        # when you call net_z1.to(device) in the main block.
+        self.register_buffer('Pmax', torch.tensor(Pmax, dtype=torch.float32))
+        self.register_buffer('Pmin', torch.tensor(Pmin, dtype=torch.float32))
         
         self.num_kg_base = num_global_kg + 1 
         self.num_boundaries = num_boundaries
@@ -75,12 +78,12 @@ class Zone_ADMM_Net(nn.Module):
         raw_Va_flat = raw_out[:, self.out_pg_dim : self.out_pg_dim + self.out_va_dim]
         raw_zk = raw_out[:, self.out_pg_dim + self.out_va_dim :]
         
+        # Now Pmax and Pmin are guaranteed to be on the exact same device as raw_Pg
         Pg_base = torch.sigmoid(raw_Pg) * (self.Pmax - self.Pmin) + self.Pmin
         Va_local = (torch.tanh(raw_Va_flat) * math.pi).view(batch_size, self.num_kg_base, self.num_boundaries)
         zk_local = torch.sigmoid(raw_zk)                       
         
         return Pg_base, Va_local, zk_local
-
 # ==========================================
 # 3. NEURAL ADMM DEPLOYMENT LOOP
 # ==========================================
@@ -161,7 +164,7 @@ def save_neural_results_to_excel(Pg_z1, zk_z1, Pg_z2, zonal_data, case_name, bat
 # ==========================================
 if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    case_name = 'case118'
+    case_name = 'pglib_opf_case118_ieee'
     case_path = f'../excel_outputs/{case_name}.xlsx'
     
     # 1. Load Excel Data
@@ -200,10 +203,10 @@ if __name__ == "__main__":
     net_z1 = Zone_ADMM_Net(num_buses_z1, num_gens_z1, num_boundaries, num_global_kg, Pmax_z1, Pmin_z1).to(device)
     net_z2 = Zone_ADMM_Net(num_buses_z2, num_gens_z2, num_boundaries, num_global_kg, Pmax_z2, Pmin_z2).to(device)
     
-    # NOTE: You MUST run the training script first to create these .pth files!
     try:
-        net_z1.load_state_dict(torch.load("data/admm_models/zone1_agent.pth", map_location=device))
-        net_z2.load_state_dict(torch.load("data/admm_models/zone2_agent.pth", map_location=device))
+        # strict=False tells PyTorch to ignore the missing Pmax and Pmin keys in the old save files
+        net_z1.load_state_dict(torch.load("data/admm_models/zone1_agent.pth", map_location=device), strict=False)
+        net_z2.load_state_dict(torch.load("data/admm_models/zone2_agent.pth", map_location=device), strict=False)
         print("Trained weights loaded successfully.")
     except FileNotFoundError:
         print("\nWARNING: Trained weights not found. Using untrained (random) networks for demonstration.")
