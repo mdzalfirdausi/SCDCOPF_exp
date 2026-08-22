@@ -103,25 +103,18 @@ def train_model(model, dataloader, num_epochs, learning_rate, device):
         if (epoch + 1) % 10 == 0:
             print(f"Epoch [{epoch+1}/{num_epochs}], Loss: {avg_loss:.6f}")
 
-# Example Execution
 if __name__ == "__main__":
-    # Ensure PyTorch uses the powerful GPUs available on the cluster
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Training on device: {device}")
     
-    # ---------------------------------------------------------
-    # TODO: Load your extracted ADMM matrices here!
-    # For now, we will create dummy data to verify the architecture compiles.
-    # Suppose we track 50 features (u and Va) over the first 10 iterations.
-    num_samples = 14000 # Your generated load profiles
-    seq_length = 10     # Observing iterations 1 through 10
-    num_features = 50   # Flattened size of u_va, u_zk, Va_base, zk
+    # 1. Load your real data (adjust the path to match your Slurm output)
+    print("Loading datasets...")
+    X_data = np.load('data/ml_dataset/pglib_opf_case118_ieee_X_seq.npy')
+    y_data = np.load('data/ml_dataset/pglib_opf_case118_ieee_y_final.npy')
     
-    dummy_X = np.random.randn(num_samples, seq_length, num_features)
-    dummy_y = np.random.randn(num_samples, num_features) # The converged values
-    # ---------------------------------------------------------
+    num_features = X_data.shape[2]
     
-    dataset = ADMMTrajectoryDataset(dummy_X, dummy_y)
+    dataset = ADMMTrajectoryDataset(X_data, y_data)
     dataloader = DataLoader(dataset, batch_size=256, shuffle=True)
     
     model = ADMM_Accelerator_LSTM(
@@ -131,4 +124,9 @@ if __name__ == "__main__":
         output_dim=num_features
     )
     
+    # 2. Train the model
     train_model(model, dataloader, num_epochs=100, learning_rate=0.001, device=device)
+    
+    # 3. SAVE THE TRAINED MODEL
+    torch.save(model.state_dict(), 'admm_accelerator.pth')
+    print("Model saved to admm_accelerator.pth")
