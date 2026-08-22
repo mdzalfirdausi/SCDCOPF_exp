@@ -262,7 +262,7 @@ def extract_state_vector(u_va, u_zk, Va_z1, Va_z2, zk_z1, zk_z2, boundary_buses,
 # ==========================================
 # 4. ADMM DATA GENERATOR
 # ==========================================
-def solve_scenario_and_extract(model_z1, model_z2, solver, rho, boundary_buses, kg_and_base, global_Kg, seq_length=10, max_iters=200, tol=5e-3):
+def solve_scenario_and_extract(model_z1, model_z2, solver, rho, boundary_buses, kg_and_base, global_Kg, seq_length=10, max_iters=1500, tol=5e-3):
     """Runs ADMM for a single modified scenario and returns X (sequence) and y (final)."""
     # Reset states for the new scenario
     u_va = {(k, b): 0.0 for k in kg_and_base for b in boundary_buses} 
@@ -467,6 +467,10 @@ if __name__ == "__main__":
             zonal_data['boundary_buses'], [0] + zonal_data['global_Kg'], 
             zonal_data['global_Kg'], seq_length=seq_length
         )
+        
+        if y_fin is None:
+            print(f" ---> WARNING: Scenario {s} failed to converge within max_iters. Skipping this profile.")
+            continue
         
         # Save output to the dynamic Slurm Job ID directory
         np.save(os.path.join(args.outdir, f'X_seq_{s}.npy'), X_seq)

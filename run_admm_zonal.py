@@ -452,7 +452,7 @@ def save_admm_results(model_z1, model_z2, case_name, base_dir="data"):
 # 4. MAIN EXECUTION BLOCK 
 # ==========================================
 if __name__ == "__main__":
-    case_name = 'pglib_opf_case30_fsr'
+    case_name = 'pglib_opf_case118_ieee'
     case_path = f'../excel_outputs/{case_name}.xlsx'
     
     print(f"Loading data from {case_path}...")
