@@ -225,7 +225,6 @@ def build_and_solve_ccga_master(bus_df, gen_df, branch_df, cost_df, load_vector,
     optimal_g = {i: pyo.value(model.Pg[i]) * baseMVA for i in model.Gens}
     return optimal_g, model
 
-
 def run_ccga_algorithm(bus_df, gen_df, branch_df, cost_df, load_vector):
     """
     Executes the CCGA Loop.

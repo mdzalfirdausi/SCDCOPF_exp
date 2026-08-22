@@ -98,6 +98,7 @@ def check_contingency_violations(g_s, PTDF_matrix, load_vector, branch_df, bus_g
                 worst_line_idx = branch_df.iloc[l]['line_ID']
                 
     return max_violation, worst_line_idx
+
 def build_and_solve_ccga_master(bus_df, gen_df, branch_df, cost_df, load_vector, active_S, baseMVA=100.0):
     """Builds the CCGA Master Problem, adding complex constraints ONLY for active_S."""
     model = pyo.ConcreteModel()
