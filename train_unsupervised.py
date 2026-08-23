@@ -64,7 +64,7 @@ class Zone_ADMM_Net(nn.Module):
         self.out_va_dim = self.num_kg_base * num_boundaries
         output_dim = self.out_pg_dim + self.out_va_dim + self.out_zk_dim
         
-        hidden_dim = 512
+        hidden_dim = 2048
         self.net = nn.Sequential(
             nn.Linear(input_dim, hidden_dim), nn.LeakyReLU(0.1), nn.BatchNorm1d(hidden_dim),
             nn.Linear(hidden_dim, hidden_dim), nn.LeakyReLU(0.1), nn.BatchNorm1d(hidden_dim),
@@ -74,15 +74,17 @@ class Zone_ADMM_Net(nn.Module):
     def forward(self, Pd, Va_target, u_va, zk_target, u_zk):
         batch_size = Pd.shape[0]
         
-        # Flatten target variables
-        x = torch.cat([Pd, Va_target.view(batch_size, -1), u_va.view(batch_size, -1), zk_target, u_zk], dim=1)
+        # NORMALIZE MULTIPLIERS: Divide by rho_ADMM (10000.0) so the NN isn't blinded by massive numbers
+        u_va_norm = u_va.view(batch_size, -1) / 10000.0
+        u_zk_norm = u_zk / 10000.0
+        
+        x = torch.cat([Pd, Va_target.view(batch_size, -1), u_va_norm, zk_target, u_zk_norm], dim=1)
         raw_out = self.net(x)
         
         raw_Pg = raw_out[:, :self.out_pg_dim]
         raw_Va_flat = raw_out[:, self.out_pg_dim : self.out_pg_dim + self.out_va_dim]
         raw_zk = raw_out[:, self.out_pg_dim + self.out_va_dim :]
         
-        # Gauge Mapping: Enforce strict physical bounds
         Pg_base = torch.sigmoid(raw_Pg) * (self.Pmax.to(x.device) - self.Pmin.to(x.device)) + self.Pmin.to(x.device)
         Va_local = (torch.tanh(raw_Va_flat) * math.pi).view(batch_size, self.num_kg_base, self.num_boundaries)
         zk_local = torch.sigmoid(raw_zk)                       
@@ -114,9 +116,12 @@ def compute_zonal_loss(Pg_base, Va_local, zk_local, Pd, Va_target, u_va, zk_targ
     admm_zk_linear = torch.sum(u_zk * zk_diff, dim=1)
     admm_zk_quad = torch.sum((rho_ADMM / 2.0) * (zk_diff ** 2), dim=1)
     
-    # Total Unsupervised Loss
+    # FIX: Apply a massive penalty multiplier (100.0) so the NN respects the boundary!
+    lambda_admm = 100.0 
+    
     admm_loss = torch.mean(admm_va_linear + admm_va_quad + admm_zk_linear + admm_zk_quad)
-    total_loss = torch.mean(gen_cost) + (lambda_bal * balance_penalty) + admm_loss
+    
+    total_loss = torch.mean(gen_cost) + (lambda_bal * balance_penalty) + (lambda_admm * admm_loss)
     
     return total_loss
 
@@ -149,7 +154,7 @@ def train_agent(zone_name, z_data, load_data_np, num_boundaries, num_global_kg, 
     
     # Initialize Model
     net = Zone_ADMM_Net(num_local_buses, num_local_gens, num_boundaries, num_global_kg, Pmax, Pmin).to(device)
-    optimizer = optim.Adam(net.parameters(), lr=1e-3)
+    optimizer = optim.Adam(net.parameters(), lr=1e-4)
     
     # Domain Randomization Training Loop
     net.train()
@@ -163,10 +168,12 @@ def train_agent(zone_name, z_data, load_data_np, num_boundaries, num_global_kg, 
             
             # Simulate ADMM messages from the neighboring zone randomly
             Va_target = (torch.rand(current_batch_size, num_kg_base, num_boundaries).to(device) * 2 * math.pi) - math.pi
-            u_va = torch.randn(current_batch_size, num_kg_base, num_boundaries).to(device) * 10.0
+            
+            # FIX: Train the network to expect massive ADMM multipliers!
+            u_va = torch.randn(current_batch_size, num_kg_base, num_boundaries).to(device) * rho_ADMM
             
             zk_target = torch.rand(current_batch_size, num_global_kg).to(device)
-            u_zk = torch.randn(current_batch_size, num_global_kg).to(device) * 10.0
+            u_zk = torch.randn(current_batch_size, num_global_kg).to(device) * rho_ADMM
             
             # Forward Pass
             Pg_base, Va_local, zk_local = net(batch_Pd, Va_target, u_va, zk_target, u_zk)
@@ -230,10 +237,10 @@ if __name__ == "__main__":
         Pd_z2_np = load_data[:, num_buses_z1:]
     
     # Train Zone 1
-    train_agent('zone1', zonal_data['zone1'], Pd_z1_np, num_boundaries, num_global_kg, baseMVA, rho_ADMM, epochs=150)
+    train_agent('zone1', zonal_data['zone1'], Pd_z1_np, num_boundaries, num_global_kg, baseMVA, rho_ADMM)
     
     # Train Zone 2
-    train_agent('zone2', zonal_data['zone2'], Pd_z2_np, num_boundaries, num_global_kg, baseMVA, rho_ADMM, epochs=150)
+    train_agent('zone2', zonal_data['zone2'], Pd_z2_np, num_boundaries, num_global_kg, baseMVA, rho_ADMM)
     
     print("\n--- Both agents successfully trained! ---")
     print("You can now run 'deploy_unsupervised.py' to execute the fast neural ADMM.")

@@ -62,7 +62,7 @@ class Zone_ADMM_Net(nn.Module):
         self.out_va_dim = self.num_kg_base * num_boundaries
         output_dim = self.out_pg_dim + self.out_va_dim + self.out_zk_dim
         
-        hidden_dim = 512
+        hidden_dim = 2048
         self.net = nn.Sequential(
             nn.Linear(input_dim, hidden_dim), nn.LeakyReLU(0.1), nn.BatchNorm1d(hidden_dim),
             nn.Linear(hidden_dim, hidden_dim), nn.LeakyReLU(0.1), nn.BatchNorm1d(hidden_dim),
@@ -71,23 +71,28 @@ class Zone_ADMM_Net(nn.Module):
         
     def forward(self, Pd, Va_target, u_va, zk_target, u_zk):
         batch_size = Pd.shape[0]
-        x = torch.cat([Pd, Va_target.view(batch_size, -1), u_va.view(batch_size, -1), zk_target, u_zk], dim=1)
+        
+        # NORMALIZE MULTIPLIERS: Divide by rho_ADMM (10000.0) so the NN isn't blinded by massive numbers
+        u_va_norm = u_va.view(batch_size, -1) / 10000.0
+        u_zk_norm = u_zk / 10000.0
+        
+        x = torch.cat([Pd, Va_target.view(batch_size, -1), u_va_norm, zk_target, u_zk_norm], dim=1)
         raw_out = self.net(x)
         
         raw_Pg = raw_out[:, :self.out_pg_dim]
         raw_Va_flat = raw_out[:, self.out_pg_dim : self.out_pg_dim + self.out_va_dim]
         raw_zk = raw_out[:, self.out_pg_dim + self.out_va_dim :]
         
-        # Now Pmax and Pmin are guaranteed to be on the exact same device as raw_Pg
-        Pg_base = torch.sigmoid(raw_Pg) * (self.Pmax - self.Pmin) + self.Pmin
+        Pg_base = torch.sigmoid(raw_Pg) * (self.Pmax.to(x.device) - self.Pmin.to(x.device)) + self.Pmin.to(x.device)
         Va_local = (torch.tanh(raw_Va_flat) * math.pi).view(batch_size, self.num_kg_base, self.num_boundaries)
         zk_local = torch.sigmoid(raw_zk)                       
         
         return Pg_base, Va_local, zk_local
+
 # ==========================================
 # 3. NEURAL ADMM DEPLOYMENT LOOP
 # ==========================================
-def run_neural_distributed_admm(Pd_z1, Pd_z2, net_z1, net_z2, rho=10000.0, max_iters=100, tol=5e-3):
+def run_neural_distributed_admm(Pd_z1, Pd_z2, net_z1, net_z2, rho=10000.0, max_iters=1000, tol=5e-3):
     device = Pd_z1.device
     batch_size = Pd_z1.shape[0]
     
@@ -122,8 +127,13 @@ def run_neural_distributed_admm(Pd_z1, Pd_z2, net_z1, net_z2, rho=10000.0, max_i
                 print(f"\nNeural ADMM Converged! ({primal_residual:.6f} <= {tol})")
                 break
                 
-            u_va = u_va + rho * (Va_z1 - Va_z2)
-            u_zk = u_zk + rho * (zk_z1 - zk_z2)
+            # --- D. Update Multipliers (Damped Gradient Ascent) ---
+            # Using a damping factor of 0.1 prevents the multipliers from 
+            # jerking the Neural Network around too violently.
+            damping = 0.1 
+            
+            u_va = u_va + (damping * rho) * (Va_z1 - Va_z2)
+            u_zk = u_zk + (damping * rho) * (zk_z1 - zk_z2)
             
     print(f"D-SCDCOPF Complete in {time.time() - start_time:.4f} seconds!")
     return Pg_z1, Va_z1, zk_z1, Pg_z2, Va_z2, zk_z2
