@@ -2,7 +2,6 @@
 
 #SBATCH --job-name=ccga_data
 #SBATCH --partition=main
-#SBATCH --exclude=node0032
 #SBATCH --output=/dev/null
 #SBATCH --error=/dev/null
 
