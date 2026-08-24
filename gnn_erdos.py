@@ -6,7 +6,8 @@ import torch.optim as optim
 import pandas as pd
 import numpy as np
 import math
-from torch_geometric.data import Data, DataLoader
+from torch_geometric.data import Data
+from torch_geometric.loader import DataLoader
 from torch_geometric.nn import GATConv, global_mean_pool
 
 # ==========================================
@@ -28,7 +29,7 @@ def create_zonal_data(case, zone1_buses, zone2_buses):
             boundary_buses.add(f_bus)
             boundary_buses.add(t_bus)
             
-    zonal_data['boundary_buses'] = list(boundary_buses)
+    zonal_data['boundary_buses'] = sorted(list(boundary_buses))
             
     zonal_data['zone1']['bus'] = case['bus'][case['bus']['bus_i'].isin(zone1_buses)].copy()
     zonal_data['zone1']['gen'] = case['gen'][case['gen']['bus_i'].isin(zone1_buses)].copy()
@@ -74,12 +75,6 @@ def create_pyg_dataset(zonal_data, load_data_np, baseMVA):
             Pmax[b_idx] = row['Pmax'] / baseMVA
             Pmin[b_idx] = row['Pmin'] / baseMVA
 
-    # Create Boundary Masks
-    boundary_mask = torch.zeros(num_buses, dtype=torch.bool)
-    for b_id in zonal_data.get('boundary_buses', []):
-        if b_id in bus_idx_map:
-            boundary_mask[bus_idx_map[b_id]] = True
-
     # Build Graph Scenarios
     dataset = []
     for s in range(len(load_data_np)):
@@ -90,7 +85,6 @@ def create_pyg_dataset(zonal_data, load_data_np, baseMVA):
         data = Data(x=x, edge_index=edge_index)
         data.Pd = Pd.view(-1)
         data.gen_mask = gen_mask
-        data.boundary_mask = boundary_mask
         data.Pmax = Pmax
         data.Pmin = Pmin
         dataset.append(data)
@@ -116,11 +110,11 @@ class Zone_ADMM_GNN(nn.Module):
             nn.Linear(128, 64), nn.LeakyReLU(0.1), nn.Linear(64, 1)
         )
         
-        # Phase Angle Head (Boundary Node-level continuous output)
+        # Phase Angle Head (Graph-level continuous output for boundary consensus)
         self.va_head = nn.Sequential(
-            nn.Linear(128 + (self.num_kg_base * 2), 128), 
+            nn.Linear(128 + (self.num_kg_base * num_boundaries * 2), 128), 
             nn.LeakyReLU(0.1), 
-            nn.Linear(128, self.num_kg_base)
+            nn.Linear(128, self.num_kg_base * num_boundaries)
         )
         
         # Contingency ZK Head (Graph-level BERNOULLI PROBABILITIES)
@@ -132,7 +126,15 @@ class Zone_ADMM_GNN(nn.Module):
         )
 
     def forward(self, data, Va_target, u_va, zk_target, u_zk):
-        x, edge_index, batch = data.x, data.edge_index, data.batch
+        x, edge_index = data.x, data.edge_index
+        
+        # Safely handle batch attribute and num_graphs for single graph inference
+        if hasattr(data, 'batch') and data.batch is not None:
+            batch = data.batch
+            num_graphs = getattr(data, 'num_graphs', batch.max().item() + 1)
+        else:
+            batch = torch.zeros(x.size(0), dtype=torch.long, device=x.device)
+            num_graphs = 1
         
         # 1. Message Passing (Graph Topology)
         h = F.leaky_relu(self.gat1(x, edge_index), 0.1)
@@ -143,25 +145,25 @@ class Zone_ADMM_GNN(nn.Module):
         raw_pg = self.pg_head(h_gen).squeeze(-1)
         Pg_base = torch.sigmoid(raw_pg) * (data.Pmax[data.gen_mask] - data.Pmin[data.gen_mask]) + data.Pmin[data.gen_mask]
         
-        # 3. Predict Va (Continuous Boundaries)
-        h_bound = h[data.boundary_mask]
-        va_t_flat = Va_target.view(Va_target.size(0), -1)
-        uva_flat = u_va.view(u_va.size(0), -1) / 10000.0
+        h_global = global_mean_pool(h, batch)
         
-        batch_bound = batch[data.boundary_mask]
-        h_bound_cat = torch.cat([h_bound, va_t_flat[batch_bound], uva_flat[batch_bound]], dim=1)
+        # 3. Predict Va (Graph-level extraction for phase angles)
+        va_t_flat = Va_target.view(num_graphs, -1)
+        uva_flat = u_va.view(num_graphs, -1) / 10000.0
         
-        raw_va = self.va_head(h_bound_cat)
+        h_global_va = torch.cat([h_global, va_t_flat, uva_flat], dim=1)
+        
+        raw_va = self.va_head(h_global_va)
         Va_local = torch.tanh(raw_va) * math.pi
-        Va_local = Va_local.view(Va_target.size(0), self.num_kg_base, self.num_boundaries)
+        Va_local = Va_local.view(num_graphs, self.num_kg_base, self.num_boundaries)
         
         # 4. Predict Zk (Discrete Binary Variables via Bernoulli Probabilities)
-        h_global = global_mean_pool(h, batch)
-        h_global_cat = torch.cat([h_global, zk_target, u_zk / 10000.0], dim=1)
-        zk_local = self.zk_head(h_global_cat)
+        h_global_zk = torch.cat([h_global, zk_target, u_zk / 10000.0], dim=1)
+        zk_local = self.zk_head(h_global_zk)
         
-        num_gens_per_graph = data.gen_mask.sum().item() // data.num_graphs
-        Pg_base = Pg_base.view(data.num_graphs, num_gens_per_graph)
+        # Safely reshape Pg_base using the inferred num_graphs
+        num_gens_per_graph = data.gen_mask.sum().item() // num_graphs
+        Pg_base = Pg_base.view(num_graphs, num_gens_per_graph)
         
         return Pg_base, Va_local, zk_local
 
@@ -218,7 +220,6 @@ def train_agent_gnn(zone_name, z_data, load_data_np, num_boundaries, num_global_
     
     pyg_dataset = create_pyg_dataset(z_data, load_data_np, baseMVA)
     
-    from torch_geometric.loader import DataLoader
     dataloader = DataLoader(pyg_dataset, batch_size=batch_size, shuffle=True)
     
     net = Zone_ADMM_GNN(num_boundaries, num_global_kg).to(device)
@@ -233,6 +234,7 @@ def train_agent_gnn(zone_name, z_data, load_data_np, num_boundaries, num_global_
             
             optimizer.zero_grad()
             
+            # Simulate ADMM messages from the neighboring zone randomly
             Va_target = (torch.rand(current_batch_size, num_kg_base, num_boundaries).to(device) * 2 * math.pi) - math.pi
             u_va = torch.randn(current_batch_size, num_kg_base, num_boundaries).to(device) * rho_ADMM
             zk_target = torch.rand(current_batch_size, num_global_kg).to(device)
@@ -276,8 +278,14 @@ if __name__ == "__main__":
     case['gen'].drop(index=zero_gen_idx, inplace=True)
     case['gencost'].drop(index=zero_gen_idx, inplace=True)
     
-    zone1_buses = list(range(1, 60))    
-    zone2_buses = list(range(60, 119))  
+    # -------------------------------------------------------------
+    # FIX: Dynamically split zones based on Actual Bus IDs 
+    # -------------------------------------------------------------
+    total_buses = case['bus']['bus_i'].tolist()
+    midpoint = len(total_buses) // 2
+    zone1_buses = total_buses[:midpoint]
+    zone2_buses = total_buses[midpoint:]
+    
     zonal_data = create_zonal_data(case, zone1_buses, zone2_buses)
     
     num_boundaries = len(zonal_data['boundary_buses'])
@@ -285,15 +293,9 @@ if __name__ == "__main__":
     num_buses_z1 = len(zonal_data['zone1']['bus'])
     
     print(f"Loading Generated Load Profiles from {csv_path}...")
-    if os.path.exists(csv_path):
-        load_data = pd.read_csv(csv_path).values / baseMVA
-        Pd_z1_np = load_data[:, :num_buses_z1]
-        Pd_z2_np = load_data[:, num_buses_z1:]
-    else:
-        print(f"WARNING: {csv_path} not found. Generating dummy load scenarios.")
-        load_data = np.random.rand(1000, 118) * (150.0 / baseMVA)
-        Pd_z1_np = load_data[:, :num_buses_z1]
-        Pd_z2_np = load_data[:, num_buses_z1:]
+    load_data = pd.read_csv(csv_path).values / baseMVA
+    Pd_z1_np = load_data[:, :num_buses_z1]
+    Pd_z2_np = load_data[:, num_buses_z1:]
     
     train_agent_gnn('zone1', zonal_data['zone1'], Pd_z1_np, num_boundaries, num_global_kg, baseMVA, rho_ADMM)
     train_agent_gnn('zone2', zonal_data['zone2'], Pd_z2_np, num_boundaries, num_global_kg, baseMVA, rho_ADMM)
