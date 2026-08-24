@@ -12,7 +12,6 @@ from torch_geometric.data import Data, Dataset
 # =============================================================================
 # 1. OFFLINE STRONG BRANCHING DATASET
 # =============================================================================
-
 class StrongBranchingDataset(Dataset):
     """
     Loads pre-collected bipartite graphs from solver logs.
@@ -33,11 +32,9 @@ class StrongBranchingDataset(Dataset):
         file_path = os.path.join(self.data_dir, self.file_names[idx])
         return torch.load(file_path, weights_only=True)
 
-
 # =============================================================================
 # 2. IMITATION LEARNING LOSS FUNCTION
 # =============================================================================
-
 def compute_branching_loss(predicted_scores, target_policy, candidate_mask, batch_index):
     """
     Computes the Cross-Entropy loss between the GNN predictions and the 
@@ -71,11 +68,9 @@ def compute_branching_loss(predicted_scores, target_policy, candidate_mask, batc
         
     return loss / num_graphs
 
-
 # =============================================================================
 # 3. OFFLINE TRAINING ENGINE
 # =============================================================================
-
 def train_learn_to_branch(data_dir, model_save_path, epochs=50, batch_size=32, lr=1e-3):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"\n--- Initializing Offline Learn-To-Branch Training on {device} ---")

@@ -268,4 +268,5 @@ def run_ccga_algorithm(bus_df, gen_df, branch_df, cost_df, load_vector, PTDF_mat
         
         iteration += 1
         
-    return optimal_g, status, iteration
+    return optimal_g, status, iteration, active_S
+
