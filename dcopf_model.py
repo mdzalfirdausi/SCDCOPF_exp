@@ -1,4 +1,5 @@
 import pyomo.environ as pyo
+from pyomo.opt import TerminationCondition
 import pandas as pd
 import numpy as np
 import math
@@ -53,7 +54,10 @@ def calculate_primary_response(optimal_g, contingency_s, gen_df, load_vector, ba
             if i == contingency_s:
                 g_s[i] = 0.0
             else:
-                g_s[i] = min((optimal_g[i] / baseMVA) + n_s * gamma[i] * pmax[i], pmax[i])
+                # If the exact solver used a slack variable, base_g might exceed pmax.
+                # This max() ensures the bisection starts from the solver's physical reality.
+                base_g = optimal_g[i] / baseMVA
+                g_s[i] = min(base_g + n_s * gamma[i] * pmax[i], max(pmax[i], base_g))
             current_generation += g_s[i]
             
         mismatch = current_generation - total_demand
@@ -129,24 +133,76 @@ def build_and_solve_ccga_master(bus_df, gen_df, branch_df, cost_df, load_vector,
         lines_to[row['bus_j']].append(row['line_ID'])
         branch_ends[row['line_ID']] = (row['bus_i'], row['bus_j'])
 
+    # ==========================================
     # 1. NOMINAL STATE (Base Case)
-    model.Pg = pyo.Var(model.Gens, bounds=lambda m, i: (pmin[i], pmax[i]))
+    # ==========================================
+    # Variables without hard bounds; bounds enforced via constraints & slacks
+    model.Pg = pyo.Var(model.Gens) 
     model.Theta = pyo.Var(model.Buses, bounds=(-math.pi, math.pi))
     model.Pf = pyo.Var(model.Branches)
+    
+    # SLACK VARIABLES (Non-Negative)
+    model.Sl_nom_line = pyo.Var(model.Branches, within=pyo.NonNegativeReals)
+    model.Sl_Pg_nom_up = pyo.Var(model.Gens, within=pyo.NonNegativeReals)
+    model.Sl_Pg_nom_down = pyo.Var(model.Gens, within=pyo.NonNegativeReals)
 
+    # 2. PROVISIONAL CONTINGENCY VARIABLES (For all s)
+    model.Pgs_prov = pyo.Var(model.All_Contingencies, model.Gens)
+    model.Sl_Pg_prov_up = pyo.Var(model.All_Contingencies, model.Gens, within=pyo.NonNegativeReals)
+    model.Sl_Pg_prov_down = pyo.Var(model.All_Contingencies, model.Gens, within=pyo.NonNegativeReals)
+
+    # 3. EXACT ACTIVE CONTINGENCIES (Only for s in Active_S)
+    model.ns = pyo.Var(model.Active_S, bounds=(0, 1))
+    model.xs = pyo.Var(model.Active_S, model.Gens, domain=pyo.Binary)
+    model.Thetas = pyo.Var(model.Active_S, model.Buses, bounds=(-math.pi, math.pi))
+    model.Pfs = pyo.Var(model.Active_S, model.Branches)
+    model.Sl_cont_line = pyo.Var(model.Active_S, model.Branches, within=pyo.NonNegativeReals)
+
+    # --- OBJECTIVE FUNCTION ---
     def obj_rule(m):
-        return sum(c2[i] * ((m.Pg[i] * baseMVA)**2) + c1[i] * (m.Pg[i] * baseMVA) for i in m.Gens)
+        penalty = 1e5 # Heavy penalty to ensure slacks are only used when mathematically necessary
+        
+        gen_cost = sum(c2[i] * ((m.Pg[i] * baseMVA)**2) + c1[i] * (m.Pg[i] * baseMVA) for i in m.Gens)
+        
+        slack_cost_nom = penalty * (
+            sum(m.Sl_nom_line[l] for l in m.Branches) + 
+            sum(m.Sl_Pg_nom_up[i] + m.Sl_Pg_nom_down[i] for i in m.Gens)
+        )
+        
+        slack_cost_prov = penalty * sum(m.Sl_Pg_prov_up[s, i] + m.Sl_Pg_prov_down[s, i] for s in m.All_Contingencies for i in m.Gens)
+        
+        if len(active_S) > 0:
+            slack_cost_cont = penalty * sum(m.Sl_cont_line[s, l] for s in m.Active_S for l in m.Branches)
+        else:
+            slack_cost_cont = 0.0
+            
+        return gen_cost + slack_cost_nom + slack_cost_prov + slack_cost_cont
+        
     model.cost = pyo.Objective(rule=obj_rule, sense=pyo.minimize)
 
+    # --- NOMINAL CONSTRAINTS ---
     def flow_rule(m, l):
         bus_from, bus_to = branch_ends[l]
         return m.Pf[l] == (m.Theta[bus_from] - m.Theta[bus_to]) / x[l]
     model.flow_eq = pyo.Constraint(model.Branches, rule=flow_rule)
 
-    def limit_rule(m, l):
+    def limit_upper_rule(m, l):
         if rateA[l] == 0: return pyo.Constraint.Skip
-        return (-rateA[l], m.Pf[l], rateA[l])
-    model.limit_eq = pyo.Constraint(model.Branches, rule=limit_rule)
+        return m.Pf[l] - m.Sl_nom_line[l] <= rateA[l]
+    model.limit_upper_eq = pyo.Constraint(model.Branches, rule=limit_upper_rule)
+
+    def limit_lower_rule(m, l):
+        if rateA[l] == 0: return pyo.Constraint.Skip
+        return m.Pf[l] + m.Sl_nom_line[l] >= -rateA[l]
+    model.limit_lower_eq = pyo.Constraint(model.Branches, rule=limit_lower_rule)
+
+    def pg_upper_rule(m, i):
+        return m.Pg[i] - m.Sl_Pg_nom_up[i] <= pmax[i]
+    model.pg_upper_eq = pyo.Constraint(model.Gens, rule=pg_upper_rule)
+
+    def pg_lower_rule(m, i):
+        return m.Pg[i] + m.Sl_Pg_nom_down[i] >= pmin[i]
+    model.pg_lower_eq = pyo.Constraint(model.Gens, rule=pg_lower_rule)
 
     def balance_rule(m, b):
         gen_total = sum(m.Pg[g] for g in bus_gens[b])
@@ -157,9 +213,7 @@ def build_and_solve_ccga_master(bus_df, gen_df, branch_df, cost_df, load_vector,
     model.balance_eq = pyo.Constraint(model.Buses, rule=balance_rule)
     model.ref_bus = pyo.Constraint(expr=model.Theta[ref_bus_id] == 0)
 
-    # 2. PROVISIONAL CONTINGENCY VARIABLES (For all s)
-    model.Pgs_prov = pyo.Var(model.All_Contingencies, model.Gens, bounds=lambda m, s, i: (0, pmax[i]))
-
+    # --- PROVISIONAL CONSTRAINTS ---
     def failed_gen_prov_rule(m, s):
         return m.Pgs_prov[s, s] == 0
     model.failed_gen_prov_eq = pyo.Constraint(model.All_Contingencies, rule=failed_gen_prov_rule)
@@ -174,12 +228,17 @@ def build_and_solve_ccga_master(bus_df, gen_df, branch_df, cost_df, load_vector,
         return m.Pgs_prov[s, i] - m.Pg[i] <= gamma[i] * pmax[i]
     model.provisional_bound_eq = pyo.Constraint(model.All_Contingencies, model.Gens, rule=provisional_bound_rule)
 
-    # 3. EXACT ACTIVE CONTINGENCIES (Only for s in Active_S)
-    model.ns = pyo.Var(model.Active_S, bounds=(0, 1))
-    model.xs = pyo.Var(model.Active_S, model.Gens, domain=pyo.Binary)
-    model.Thetas = pyo.Var(model.Active_S, model.Buses, bounds=(-math.pi, math.pi))
-    model.Pfs = pyo.Var(model.Active_S, model.Branches)
+    def pgs_prov_upper_rule(m, s, i):
+        if s == i: return pyo.Constraint.Skip
+        return m.Pgs_prov[s, i] - m.Sl_Pg_prov_up[s, i] <= pmax[i]
+    model.pgs_prov_upper_eq = pyo.Constraint(model.All_Contingencies, model.Gens, rule=pgs_prov_upper_rule)
 
+    def pgs_prov_lower_rule(m, s, i):
+        if s == i: return pyo.Constraint.Skip
+        return m.Pgs_prov[s, i] + m.Sl_Pg_prov_down[s, i] >= 0
+    model.pgs_prov_lower_eq = pyo.Constraint(model.All_Contingencies, model.Gens, rule=pgs_prov_lower_rule)
+
+    # --- ACTIVE CONTINGENCY CONSTRAINTS ---
     def apr_upper_rule(m, s, i):
         if s == i: return pyo.Constraint.Skip
         return m.Pgs_prov[s, i] - m.Pg[i] - m.ns[s] * gamma[i] * pmax[i] <= pmax[i] * (1 - m.xs[s, i])
@@ -205,10 +264,15 @@ def build_and_solve_ccga_master(bus_df, gen_df, branch_df, cost_df, load_vector,
         return m.Pfs[s, l] == (m.Thetas[s, bus_from] - m.Thetas[s, bus_to]) / x[l]
     model.flow_cont_eq = pyo.Constraint(model.Active_S, model.Branches, rule=flow_cont_rule)
 
-    def limit_cont_rule(m, s, l):
+    def limit_cont_upper_rule(m, s, l):
         if rateA[l] == 0: return pyo.Constraint.Skip
-        return (-rateA[l], m.Pfs[s, l], rateA[l])
-    model.limit_cont_eq = pyo.Constraint(model.Active_S, model.Branches, rule=limit_cont_rule)
+        return m.Pfs[s, l] - m.Sl_cont_line[s, l] <= rateA[l]
+    model.limit_cont_upper_eq = pyo.Constraint(model.Active_S, model.Branches, rule=limit_cont_upper_rule)
+
+    def limit_cont_lower_rule(m, s, l):
+        if rateA[l] == 0: return pyo.Constraint.Skip
+        return m.Pfs[s, l] + m.Sl_cont_line[s, l] >= -rateA[l]
+    model.limit_cont_lower_eq = pyo.Constraint(model.Active_S, model.Branches, rule=limit_cont_lower_rule)
 
     def balance_cont_rule(m, s, b):
         gen_total = sum(m.Pgs_prov[s, g] for g in bus_gens[b])
@@ -222,9 +286,15 @@ def build_and_solve_ccga_master(bus_df, gen_df, branch_df, cost_df, load_vector,
         return m.Thetas[s, ref_bus_id] == 0
     model.ref_bus_cont_eq = pyo.Constraint(model.Active_S, rule=ref_bus_cont_rule)
 
+    # --- SOLVE ---
     solver = pyo.SolverFactory('gurobi')
     results = solver.solve(model, tee=False)
     
+    # Failsafe: Should never hit due to slacks, but protects the loop if Gurobi license drops, etc.
+    if results.solver.termination_condition == TerminationCondition.infeasible or \
+       results.solver.termination_condition == TerminationCondition.infeasibleOrUnbounded:
+        raise ValueError(f"Model mathematically infeasible. Check grid data format.")
+        
     optimal_g = {i: pyo.value(model.Pg[i]) * baseMVA for i in model.Gens}
     return optimal_g, results.solver.termination_condition
 
@@ -234,7 +304,6 @@ def run_ccga_algorithm(bus_df, gen_df, branch_df, cost_df, load_vector, PTDF_mat
     epsilon = 0.05 / 100.0 # Tolerance converted to per-unit
     iteration = 0
     
-    # Create the generator-to-bus mapping dictionary ONCE for extreme speed
     bus_gen_map = gen_df.set_index('gen_ID')['bus_i'].to_dict()
     
     while True:
@@ -249,7 +318,6 @@ def run_ccga_algorithm(bus_df, gen_df, branch_df, cost_df, load_vector, PTDF_mat
         for s in gen_df['gen_ID']:
             n_s, g_s = calculate_primary_response(optimal_g, s, gen_df, load_vector)
             
-            # Pass the fast bus_gen_map instead of gen_df
             max_viol, line_idx = check_contingency_violations(g_s, PTDF_matrix, load_vector, branch_df, bus_gen_map)
             
             if max_viol > global_max_violation:
@@ -264,9 +332,9 @@ def run_ccga_algorithm(bus_df, gen_df, branch_df, cost_df, load_vector, PTDF_mat
             active_S.append(worst_contingency)
             print(f"      -> Iteration {iteration}: Line {worst_line} violated under loss of Gen {worst_contingency}. Adding to Master.")
         else:
-            break # Failsafe to prevent infinite loops
+            print(f"      -> Iteration {iteration}: Line {worst_line} under loss of Gen {worst_contingency} cannot be physically secured. Slack variable active. Ending loop.")
+            break 
         
         iteration += 1
         
     return optimal_g, status, iteration, active_S
-

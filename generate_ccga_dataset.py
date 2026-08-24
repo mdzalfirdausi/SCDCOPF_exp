@@ -9,7 +9,7 @@ from torch_geometric.data import Data
 # Import your custom physical solver
 from dcopf_model import build_ptdf, run_ccga_algorithm
 
-def generate_ccga_dataset(bus_df, gen_df, branch_df, loads_df, PTDF_matrix, start_idx, output_dir):
+def generate_ccga_dataset(bus_df, gen_df, branch_df, cost_df, loads_df, PTDF_matrix, start_idx, output_dir):
     os.makedirs(output_dir, exist_ok=True)
     
     # Map generator IDs to indices for building the binary target tensor
@@ -38,10 +38,9 @@ def generate_ccga_dataset(bus_df, gen_df, branch_df, loads_df, PTDF_matrix, star
             print(f"Solving Instance {global_idx}...")
             
             # RUN EXACT SOLVER
-            # CRITICAL: run_ccga_algorithm in dcopf_model.py MUST be modified to return active_S
-            # i.e., return optimal_g, status, iteration, active_S
+            # Passed cost_df successfully
             optimal_g, status, iters, active_S = run_ccga_algorithm(
-                bus_df, gen_df, branch_df, None, load_vector, PTDF_matrix  # cost_df arg handles internally if merged
+                bus_df, gen_df, branch_df, cost_df, load_vector, PTDF_matrix  
             )
             
             # Create the Binary Label (1 if contingency is in active_S, 0 otherwise)
@@ -81,7 +80,7 @@ def main():
     
     case_name = args.case
 
-    # 2. Handle Slurm Array Indexing
+    # 2. Handle Slurm Array Indexing (Defaults to 0 for local testing)
     task_id = int(os.environ.get("SLURM_ARRAY_TASK_ID", 0))
     chunk_size = 10
     
@@ -109,7 +108,6 @@ def main():
     PTDF_matrix, bus_list = build_ptdf(bus_df, branch_df, ref_bus_id)
 
     # 5. Load only the assigned chunk of the generated loads
-    # Using skiprows=range(1, start_idx + 1) preserves the header (row 0)
     print(f"Node task {task_id}: Loading instances {start_idx} to {end_idx-1} from {loads_path}...")
     loads_df = pd.read_csv(loads_path, skiprows=range(1, start_idx + 1), nrows=chunk_size)
     
@@ -118,6 +116,7 @@ def main():
         bus_df=bus_df, 
         gen_df=gen_df, 
         branch_df=branch_df, 
+        cost_df=cost_df,      # <--- Passed successfully
         loads_df=loads_df,
         PTDF_matrix=PTDF_matrix,
         start_idx=start_idx,
