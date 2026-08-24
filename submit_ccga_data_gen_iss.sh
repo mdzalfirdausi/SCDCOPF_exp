@@ -70,10 +70,6 @@ echo "============================================"
 # 3. ENVIRONMENT
 # =========================================================
 
-# Load HPC Gurobi configuration
-module purge
-module load gurobi/13.0.1
-
 # Initialize Conda
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate pytorch
