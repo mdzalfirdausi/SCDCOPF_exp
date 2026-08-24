@@ -5,7 +5,6 @@ import pyomo.environ as pyo
 import os
 import multiprocessing
 import copy
-import sys
 
 # ==========================================
 # 1. DATA SPLITTING & PREP
@@ -262,7 +261,7 @@ def extract_state_vector(u_va, u_zk, Va_z1, Va_z2, zk_z1, zk_z2, boundary_buses,
 # ==========================================
 # 4. ADMM DATA GENERATOR
 # ==========================================
-def solve_scenario_and_extract(model_z1, model_z2, solver, rho, boundary_buses, kg_and_base, global_Kg, seq_length=10, max_iters=1500, tol=5e-3):
+def solve_scenario_and_extract(model_z1, model_z2, solver, rho, boundary_buses, kg_and_base, global_Kg, seq_length=10, max_iters=200, tol=5e-3):
     """Runs ADMM for a single modified scenario and returns X (sequence) and y (final)."""
     # Reset states for the new scenario
     u_va = {(k, b): 0.0 for k in kg_and_base for b in boundary_buses} 
@@ -372,19 +371,8 @@ def solve_scenario_and_extract(model_z1, model_z2, solver, rho, boundary_buses, 
 # 5. DATASET GENERATION LOOP
 # ==========================================
 if __name__ == "__main__":
-    import argparse
-    import time
-    
-    parser = argparse.ArgumentParser(description="Generate ADMM Dataset")
-    parser.add_argument('--case', type=str, required=True, help="Base case name without .xlsx")
-    
-    # Made optional with defaults for manual testing
-    parser.add_argument('--task_id', type=int, default=0, help="Slurm Array Task ID (Default: 0)")
-    parser.add_argument('--outdir', type=str, default="data/admm_dataset", help="Directory to save .npy files")
-    
-    args = parser.parse_args()
-
-    case_name = args.case
+    # UPDATE: Now pointing to the 118-bus base case
+    case_name = 'pglib_opf_case118_ieee'
     case_path = f'../excel_outputs/{case_name}.xlsx'
     
     print(f"Loading Base Data from {case_path}...")
@@ -402,8 +390,9 @@ if __name__ == "__main__":
     case['M_eta'] = 1500
     case['rho_ADMM'] = 10000.0 
     
-    zone1 = list(range(1, 60))    
-    zone2 = list(range(60, 119))  
+    # UPDATE: Splitting 118 buses roughly in half
+    zone1 = list(range(1, 60))    # Buses 1 through 59
+    zone2 = list(range(60, 119))  # Buses 60 through 118
 
     zonal_data = create_zonal_data(case, zone1, zone2)
     ref_bus = int(case['bus'].loc[case['bus']['type'] == 3, 'bus_i'].values[0])
@@ -413,32 +402,28 @@ if __name__ == "__main__":
     model_z2 = build_admm_zone(2, zonal_data['zone2'], case['branch'], zonal_data['tie_lines'], zonal_data['boundary_buses'], ref_bus in zone2, ref_bus)
     
     solver = pyo.SolverFactory('gurobi_direct')
-    # Use the cores allocated by Slurm (16)
-    solver.options['Threads'] = int(os.environ.get('SLURM_CPUS_PER_TASK', multiprocessing.cpu_count()))
+    solver.options['Threads'] = multiprocessing.cpu_count()
     
-    csv_path = f'data/{case_name}_generated_loads.csv'
+    # --- LOAD THE SCENARIO CSV ---
+    csv_path = 'data/pglib_opf_case118_ieee_generated_loads.csv'
     print(f"Loading Load Profiles from {csv_path}...")
     load_profiles = pd.read_csv(csv_path)
     
-    # Calculate the 10-scenario chunk for this specific Slurm task
-    scenarios_per_task = 10
-    start_idx = args.task_id * scenarios_per_task
-    end_idx = start_idx + scenarios_per_task
-    
-    print(f"\n=====================================================")
-    print(f" SLURM TASK {args.task_id} ACTIVE: SCENARIOS {start_idx} TO {end_idx - 1}")
-    print(f"=====================================================")
-    
+    # Limit to 1000 scenarios as requested
+    num_scenarios = min(1000, len(load_profiles))
     seq_length = 10
+    X_dataset = []
+    y_dataset = []
     
-    for s in range(start_idx, end_idx):
-        if s >= len(load_profiles):
-            print(f"Scenario index {s} exceeds data length. Stopping.")
-            break
-            
+    print(f"\nCommencing Simulation of {num_scenarios} Scenarios...")
+    
+    for s in range(num_scenarios):
         scenario_start_time = time.time()
-        print(f"\n -> Starting Scenario {s}...")
+        print(f"\n=====================================================")
+        print(f" STARTING SCENARIO {s + 1}/{num_scenarios}")
+        print(f"=====================================================")
         
+        # Extract row 's' from the CSV
         scenario_row = load_profiles.iloc[s]
         
         # Inject new loads directly into Zone 1
@@ -449,6 +434,7 @@ if __name__ == "__main__":
                 new_pd_mw = scenario_row[b]
             else:
                 new_pd_mw = scenario_row.iloc[int(b)-1]
+                
             model_z1.Pd[b].set_value(new_pd_mw / baseMVA)
             
         # Inject new loads directly into Zone 2
@@ -459,6 +445,7 @@ if __name__ == "__main__":
                 new_pd_mw = scenario_row[b]
             else:
                 new_pd_mw = scenario_row.iloc[int(b)-1]
+                
             model_z2.Pd[b].set_value(new_pd_mw / baseMVA)
 
         # Solve ADMM for this specific scenario
@@ -468,15 +455,14 @@ if __name__ == "__main__":
             zonal_data['global_Kg'], seq_length=seq_length
         )
         
-        if y_fin is None:
-            print(f" ---> WARNING: Scenario {s} failed to converge within max_iters. Skipping this profile.")
-            continue
-        
-        # Save output to the dynamic Slurm Job ID directory
-        np.save(os.path.join(args.outdir, f'X_seq_{s}.npy'), X_seq)
-        np.save(os.path.join(args.outdir, f'y_final_{s}.npy'), y_fin)
+        X_dataset.append(X_seq)
+        y_dataset.append(y_fin)
         
         duration = time.time() - scenario_start_time
-        print(f" ---> Scenario {s} saved successfully in {duration:.2f} seconds!")
+        print(f" ---> Scenario {s + 1} Completed in {duration:.2f} seconds.")
 
-    print(f"\nTask {args.task_id} completed successfully!")
+    # Save to disk
+    os.makedirs('data/ml_dataset', exist_ok=True)
+    np.save(f'data/ml_dataset/{case_name}_X_seq.npy', np.array(X_dataset))
+    np.save(f'data/ml_dataset/{case_name}_y_final.npy', np.array(y_dataset))
+    print("\nDataset generation complete! Tensors saved to data/ml_dataset/")
