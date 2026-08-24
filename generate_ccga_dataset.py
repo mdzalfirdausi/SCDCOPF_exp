@@ -27,7 +27,7 @@ def generate_ccga_dataset(bus_df, gen_df, branch_df, cost_df, loads_df, PTDF_mat
 
     success_count = 0
     
-    # Execute loop over the assigned chunk of loads
+    # Execute loop over EVERY load in the dataframe
     for local_idx, row in loads_df.reset_index(drop=True).iterrows():
         global_idx = start_idx + local_idx
         
@@ -38,7 +38,6 @@ def generate_ccga_dataset(bus_df, gen_df, branch_df, cost_df, loads_df, PTDF_mat
             print(f"Solving Instance {global_idx}...")
             
             # RUN EXACT SOLVER
-            # Passed cost_df successfully
             optimal_g, status, iters, active_S = run_ccga_algorithm(
                 bus_df, gen_df, branch_df, cost_df, load_vector, PTDF_matrix  
             )
@@ -68,7 +67,7 @@ def generate_ccga_dataset(bus_df, gen_df, branch_df, cost_df, loads_df, PTDF_mat
         except Exception as e:
             print(f"Instance {global_idx} failed: {e}")
 
-    print(f"\nSuccessfully generated {success_count} CCGA PyG samples for this chunk.")
+    print(f"\nSuccessfully generated {success_count} CCGA PyG samples.")
 
 
 def main():
@@ -80,12 +79,8 @@ def main():
     
     case_name = args.case
 
-    # 2. Handle Slurm Array Indexing (Defaults to 0 for local testing)
-    task_id = int(os.environ.get("SLURM_ARRAY_TASK_ID", 0))
-    chunk_size = 10
-    
-    start_idx = task_id * chunk_size
-    end_idx = start_idx + chunk_size
+    # 2. Hardcode start_idx to 0 since we are processing the whole file at once
+    start_idx = 0
 
     # 3. Define accurate relative paths dynamically based on the case
     base_data_dir = "../excel_outputs/"
@@ -96,7 +91,7 @@ def main():
     output_dir = os.path.join(gen_data_dir, "ccga_samples", case_name)
 
     # 4. Load Base Network Data
-    print(f"Node task {task_id}: Loading network topology for case '{case_name}' from {excel_path}...")
+    print(f"Loading network topology for case '{case_name}' from {excel_path}...")
     bus_df = pd.read_excel(excel_path, sheet_name='bus')
     gen_df = pd.read_excel(excel_path, sheet_name='gen')
     branch_df = pd.read_excel(excel_path, sheet_name='branch')
@@ -104,19 +99,20 @@ def main():
     
     ref_bus_id = bus_df.loc[bus_df['type'] == 3, 'bus_i'].values[0]
     
-    print(f"Node task {task_id}: Pre-computing PTDF Matrix (Reference Bus: {ref_bus_id})...")
+    print(f"Pre-computing PTDF Matrix (Reference Bus: {ref_bus_id})...")
     PTDF_matrix, bus_list = build_ptdf(bus_df, branch_df, ref_bus_id)
 
-    # 5. Load only the assigned chunk of the generated loads
-    print(f"Node task {task_id}: Loading instances {start_idx} to {end_idx-1} from {loads_path}...")
-    loads_df = pd.read_csv(loads_path, skiprows=range(1, start_idx + 1), nrows=chunk_size)
+    # 5. Load the ENTIRE generated loads file
+    print(f"Loading ALL instances from {loads_path}...")
+    loads_df = pd.read_csv(loads_path)
+    print(f"Detected {len(loads_df)} load scenarios to process.")
     
     # 6. Call the dataset generator
     generate_ccga_dataset(
         bus_df=bus_df, 
         gen_df=gen_df, 
         branch_df=branch_df, 
-        cost_df=cost_df,      # <--- Passed successfully
+        cost_df=cost_df,
         loads_df=loads_df,
         PTDF_matrix=PTDF_matrix,
         start_idx=start_idx,
