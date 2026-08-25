@@ -1,5 +1,9 @@
 import os
 import sys
+
+# ADD THIS LINE BEFORE ANY OTHER IMPORTS
+os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
+
 import argparse
 import torch
 import numpy as np

@@ -5,6 +5,7 @@ import pyomo.environ as pyo
 import os
 import multiprocessing
 import copy
+import argparse
 
 # ==========================================
 # 1. DATA SPLITTING & PREP
@@ -160,7 +161,6 @@ def build_admm_zone(zone_id, zone_data, full_branch_df, tie_lines, boundary_buse
         return m.Pf_base[l] == susceptance[l] * (m.Va_base[bus_from] - m.Va_base[bus_to])
     model.flow_base_eq = pyo.Constraint(model.AllBranches, rule=flow_base_rule)
 
-    # Use mutable Pd parameter
     def balance_base_rule(m, b):
         gen_total = sum(m.Pg_base[g] for g in bus_gens[b])
         flow_out = sum(m.Pf_base[l] for l in m.AllBranches if branch_ends[l][0] == b)
@@ -215,7 +215,6 @@ def build_admm_zone(zone_id, zone_data, full_branch_df, tie_lines, boundary_buse
         gen_total = sum(m.Pg_k[k, g] for g in bus_gens[b])
         flow_out = sum(m.Pf_k[k, l] for l in m.AllBranches if branch_ends[l][0] == b)
         flow_in = sum(m.Pf_k[k, l] for l in m.AllBranches if branch_ends[l][1] == b)
-        # Use mutable Pd parameter
         return gen_total - m.Pd[b] == flow_out - flow_in
     model.balance_k_eq = pyo.Constraint(model.Kg_Global, model.LocalBuses, rule=balance_k_rule)
 
@@ -238,21 +237,15 @@ def build_admm_zone(zone_id, zone_data, full_branch_df, tie_lines, boundary_buse
 # 3. FEATURE EXTRACTOR
 # ==========================================
 def extract_state_vector(u_va, u_zk, Va_z1, Va_z2, zk_z1, zk_z2, boundary_buses, kg_and_base, global_Kg):
-    """Flattens the ADMM variables into a single deterministic 1D array for Neural Networks."""
     b_buses = sorted(list(boundary_buses))
     k_base = sorted(list(kg_and_base))
     k_glob = sorted(list(global_Kg))
     
     features = []
-    # Append Dual Variables
     features.extend([u_va[k, b] for k in k_base for b in b_buses])
     features.extend([u_zk[k] for k in k_glob])
-    
-    # Append Primal Variables (Phase Angles)
     features.extend([Va_z1[k, b] for k in k_base for b in b_buses])
     features.extend([Va_z2[k, b] for k in k_base for b in b_buses])
-    
-    # Append Primal Variables (Global Signal)
     features.extend([zk_z1[k] for k in k_glob])
     features.extend([zk_z2[k] for k in k_glob])
     
@@ -262,8 +255,6 @@ def extract_state_vector(u_va, u_zk, Va_z1, Va_z2, zk_z1, zk_z2, boundary_buses,
 # 4. ADMM DATA GENERATOR
 # ==========================================
 def solve_scenario_and_extract(model_z1, model_z2, solver, rho, boundary_buses, kg_and_base, global_Kg, seq_length=10, max_iters=200, tol=5e-3):
-    """Runs ADMM for a single modified scenario and returns X (sequence) and y (final)."""
-    # Reset states for the new scenario
     u_va = {(k, b): 0.0 for k in kg_and_base for b in boundary_buses} 
     Va_z1 = {(k, b): 0.0 for k in kg_and_base for b in boundary_buses}
     Va_z2 = {(k, b): 0.0 for k in kg_and_base for b in boundary_buses}
@@ -271,7 +262,6 @@ def solve_scenario_and_extract(model_z1, model_z2, solver, rho, boundary_buses, 
     zk_z1 = {k: 0.0 for k in global_Kg}
     zk_z2 = {k: 0.0 for k in global_Kg}
     
-    # Unfix binary variables if they were locked in the previous scenario
     for k in global_Kg:
         for i in model_z1.Gens:
             model_z1.xk[k, i].unfix()
@@ -282,7 +272,6 @@ def solve_scenario_and_extract(model_z1, model_z2, solver, rho, boundary_buses, 
     y_final = None
 
     for itr in range(1, max_iters + 1):
-        # Update Zone 1
         for b in boundary_buses:
             for k in kg_and_base:
                 model_z1.Va_target[k, b].set_value(Va_z2[k, b])
@@ -300,7 +289,6 @@ def solve_scenario_and_extract(model_z1, model_z2, solver, rho, boundary_buses, 
         for k in global_Kg:
             zk_z1[k] = pyo.value(model_z1.zk[k])
             
-        # Update Zone 2
         for b in boundary_buses:
             for k in kg_and_base:
                 model_z2.Va_target[k, b].set_value(Va_z1[k, b])
@@ -318,7 +306,6 @@ def solve_scenario_and_extract(model_z1, model_z2, solver, rho, boundary_buses, 
         for k in global_Kg:
             zk_z2[k] = pyo.value(model_z2.zk[k])
 
-        # Track Sequence Data
         if itr <= seq_length:
             X_sequence.append(extract_state_vector(u_va, u_zk, Va_z1, Va_z2, zk_z1, zk_z2, boundary_buses, kg_and_base, global_Kg))
 
@@ -330,7 +317,6 @@ def solve_scenario_and_extract(model_z1, model_z2, solver, rho, boundary_buses, 
             print(f"      [ADMM Iter {itr}] Primal Residual: {primal_residual:.6f}")
             
         if primal_residual <= tol:
-            # Lock & Polish
             for k in global_Kg:
                 for i in model_z1.Gens:
                     val_z1 = pyo.value(model_z1.xk[k, i], exception=False)
@@ -361,7 +347,6 @@ def solve_scenario_and_extract(model_z1, model_z2, solver, rho, boundary_buses, 
         for k in global_Kg:
             u_zk[k] = u_zk[k] + rho * (zk_z1[k] - zk_z2[k])
 
-    # Ensure sequence is padded if it converged before seq_length
     while len(X_sequence) < seq_length:
         X_sequence.append(X_sequence[-1])
 
@@ -371,11 +356,15 @@ def solve_scenario_and_extract(model_z1, model_z2, solver, rho, boundary_buses, 
 # 5. DATASET GENERATION LOOP
 # ==========================================
 if __name__ == "__main__":
-    # UPDATE: Now pointing to the 118-bus base case
-    case_name = 'pglib_opf_case118_ieee'
+    parser = argparse.ArgumentParser(description="Generate ADMM sequence dataset for neural network training.")
+    parser.add_argument('--case', type=str, required=True, help="The name of the case (e.g., 'pglib_opf_case14_ieee')")
+    parser.add_argument('--num_instances', type=int, default=1000, help="Number of scenarios to process")
+    args = parser.parse_args()
+
+    case_name = args.case
     case_path = f'../excel_outputs/{case_name}.xlsx'
     
-    print(f"Loading Base Data from {case_path}...")
+    print(f"Loading Base Excel Data from {case_path}...")
     case = pd.read_excel(case_path, sheet_name=['baseMVA','bus','gen','gencost','branch'])
     baseMVA = case['baseMVA']['baseMVA'][0]
     
@@ -390,9 +379,13 @@ if __name__ == "__main__":
     case['M_eta'] = 1500
     case['rho_ADMM'] = 10000.0 
     
-    # UPDATE: Splitting 118 buses roughly in half
-    zone1 = list(range(1, 60))    # Buses 1 through 59
-    zone2 = list(range(60, 119))  # Buses 60 through 118
+    # AUTOMATED ZONING: Split the buses dynamically in half based on the case
+    total_buses = case['bus']['bus_i'].tolist()
+    midpoint = len(total_buses) // 2
+    zone1 = total_buses[:midpoint]
+    zone2 = total_buses[midpoint:]
+    
+    print(f"Automated Zoning: Zone 1 has {len(zone1)} buses, Zone 2 has {len(zone2)} buses.")
 
     zonal_data = create_zonal_data(case, zone1, zone2)
     ref_bus = int(case['bus'].loc[case['bus']['type'] == 3, 'bus_i'].values[0])
@@ -404,13 +397,11 @@ if __name__ == "__main__":
     solver = pyo.SolverFactory('gurobi_direct')
     solver.options['Threads'] = multiprocessing.cpu_count()
     
-    # --- LOAD THE SCENARIO CSV ---
-    csv_path = 'data/pglib_opf_case118_ieee_generated_loads.csv'
+    csv_path = f'data/{case_name}_generated_loads.csv'
     print(f"Loading Load Profiles from {csv_path}...")
     load_profiles = pd.read_csv(csv_path)
     
-    # Limit to 1000 scenarios as requested
-    num_scenarios = min(1000, len(load_profiles))
+    num_scenarios = min(args.num_instances, len(load_profiles))
     seq_length = 10
     X_dataset = []
     y_dataset = []
@@ -423,10 +414,8 @@ if __name__ == "__main__":
         print(f" STARTING SCENARIO {s + 1}/{num_scenarios}")
         print(f"=====================================================")
         
-        # Extract row 's' from the CSV
         scenario_row = load_profiles.iloc[s]
         
-        # Inject new loads directly into Zone 1
         for b in model_z1.LocalBuses:
             if str(b) in scenario_row.index:
                 new_pd_mw = scenario_row[str(b)]
@@ -434,10 +423,8 @@ if __name__ == "__main__":
                 new_pd_mw = scenario_row[b]
             else:
                 new_pd_mw = scenario_row.iloc[int(b)-1]
-                
             model_z1.Pd[b].set_value(new_pd_mw / baseMVA)
             
-        # Inject new loads directly into Zone 2
         for b in model_z2.LocalBuses:
             if str(b) in scenario_row.index:
                 new_pd_mw = scenario_row[str(b)]
@@ -445,10 +432,8 @@ if __name__ == "__main__":
                 new_pd_mw = scenario_row[b]
             else:
                 new_pd_mw = scenario_row.iloc[int(b)-1]
-                
             model_z2.Pd[b].set_value(new_pd_mw / baseMVA)
 
-        # Solve ADMM for this specific scenario
         X_seq, y_fin = solve_scenario_and_extract(
             model_z1, model_z2, solver, case['rho_ADMM'], 
             zonal_data['boundary_buses'], [0] + zonal_data['global_Kg'], 
@@ -461,8 +446,7 @@ if __name__ == "__main__":
         duration = time.time() - scenario_start_time
         print(f" ---> Scenario {s + 1} Completed in {duration:.2f} seconds.")
 
-    # Save to disk
     os.makedirs('data/ml_dataset', exist_ok=True)
     np.save(f'data/ml_dataset/{case_name}_X_seq.npy', np.array(X_dataset))
     np.save(f'data/ml_dataset/{case_name}_y_final.npy', np.array(y_dataset))
-    print("\nDataset generation complete! Tensors saved to data/ml_dataset/")
+    print(f"\nDataset generation complete! Tensors saved to data/ml_dataset/{case_name}_X_seq.npy")
