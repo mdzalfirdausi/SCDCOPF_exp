@@ -22,7 +22,7 @@ class CCGADataset(Dataset):
         return len(self.file_names)
 
     def get(self, idx):
-        return torch.load(os.path.join(self.data_dir, self.file_names[idx]), weights_only=True)
+        return torch.load(os.path.join(self.data_dir, self.file_names[idx]), weights_only=False)
 
 # =============================================================================
 # 2. GNN CONTINGENCY PREDICTOR
