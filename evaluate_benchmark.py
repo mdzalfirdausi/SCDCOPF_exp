@@ -14,7 +14,7 @@ import pyomo.environ as pyo
 import matplotlib.pyplot as plt
 
 # Import baseline functions and the standardized ML-ADMM runner
-from dcopf_model import build_ptdf, run_ccga_algorithm, check_contingency_violations
+from dcopf_model import build_ptdf, run_ccga_algorithm, check_contingency_violations, calculate_primary_response
 from gnn_erdos import Zone_ADMM_GNN, create_zonal_data, create_pyg_dataset
 from run_ml_aladin import run_ml_aladin_scenario
 
@@ -26,6 +26,33 @@ def calculate_generation_cost(pg_dict, case_data, baseMVA):
         pg_mw = pg_val * baseMVA
         cost += (c2 * (pg_mw**2)) + (c1 * pg_mw) + c0
     return cost
+
+def evaluate_true_n1_security(pg_base_mw, case_data, PTDF_matrix, load_vector, baseMVA):
+    """Simulates actual N-1 generator outages and primary frequency response."""
+    gen_df = case_data['gen'].copy()
+    branch_df = case_data['branch']
+    bus_gen_map = gen_df.set_index('gen_ID')['bus_i'].to_dict()
+    
+    # Ensure gen_df has access to the correct gamma
+    gen_df.attrs['gamma'] = case_data.get('gamma', 0.05)
+    
+    max_overall_violation = 0.0
+    
+    for k in gen_df['gen_ID']:
+        try:
+            # 1. Simulate the outage of generator k 
+            n_s, g_s = calculate_primary_response(pg_base_mw, k, gen_df, load_vector, baseMVA)
+            
+            # 2. Check the post-contingency line flows
+            viol, worst_line = check_contingency_violations(g_s, PTDF_matrix, load_vector, branch_df, bus_gen_map, baseMVA)
+            
+            if viol > max_overall_violation:
+                max_overall_violation = viol
+        except Exception as e:
+            # If the system cannot balance the lost power, it is severely violated.
+            return float('inf')
+            
+    return max_overall_violation
 
 def evaluate_benchmarks():
     parser = argparse.ArgumentParser(description="Evaluate ML-ADMM vs Monolithic CCGA Baseline")
@@ -44,7 +71,11 @@ def evaluate_benchmarks():
     case_path = f'../excel_outputs/{case_name}.xlsx'
     case = pd.read_excel(case_path, sheet_name=['baseMVA','bus','gen','gencost','branch'])
     baseMVA = case['baseMVA']['baseMVA'][0]
-    case['gamma'], case['M_eta'] = 0.05, 1500
+    case['gamma'], case['M_eta'] = 1, 1500
+    case['gen'].attrs['gamma'] = case['gamma']  # <-- ADD THIS LINE
+    
+    # ADD THIS LINE: Attach gamma to the generator dataframe so the CCGA baseline can read it
+    case['gen'].attrs['gamma'] = case['gamma']
 
     zero_gen_idx = [num for num, i in enumerate(case['gen'].Pmax.values / baseMVA) if (i == 0 and (case['gen'].Pmin.values / baseMVA)[num] == 0) or (case['gen'].Pmin.values / baseMVA)[num] < 0]
     case['gen'].drop(index=zero_gen_idx, inplace=True)
@@ -112,7 +143,7 @@ def evaluate_benchmarks():
         
         bus_gen_map = case['gen'].set_index('gen_ID')['bus_i'].to_dict()
         pg_ml_mw = {k: v * baseMVA for k, v in pg_ml_pu.items()}
-        max_viol, _ = check_contingency_violations(pg_ml_mw, PTDF_matrix, load_vector, case['branch'], bus_gen_map)
+        max_viol = evaluate_true_n1_security(pg_ml_mw, case, PTDF_matrix, load_vector, baseMVA)
         
         speedup = time_ccga / time_ml_total if time_ml_total > 0 else 0.0
         opt_gap = ((cost_ml - cost_baseline) / cost_baseline) * 100.0 if cost_baseline > 0 else 0.0

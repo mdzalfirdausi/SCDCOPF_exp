@@ -42,7 +42,10 @@ def calculate_primary_response(optimal_g, contingency_s, gen_df, load_vector, ba
     """Algorithm 1: Bisection search to find the global signal n_s and exact g_s."""
     total_demand = sum(load_vector.values()) / baseMVA
     pmax = dict(zip(gen_df['gen_ID'], gen_df['Pmax'] / baseMVA))
-    gamma = {i: 1.0 for i in gen_df['gen_ID']} 
+    
+    # Extract gamma dynamically, defaulting to 1.0 if not found
+    gamma_val = gen_df.attrs.get('gamma', 1.0) 
+    gamma = {i: gamma_val for i in gen_df['gen_ID']} 
     
     n_low, n_high = 0.0, 1.0
     n_s = 0.5
@@ -119,7 +122,10 @@ def build_and_solve_ccga_master(bus_df, gen_df, branch_df, cost_df, load_vector,
     c2 = dict(zip(cost_df['gen_ID'], cost_df['c2']))
     x = dict(zip(branch_df['line_ID'], branch_df['x']))
     rateA = dict(zip(branch_df['line_ID'], branch_df['rateA'] / baseMVA))
-    gamma = {i: 1.0 for i in model.Gens} 
+    
+    # Extract gamma dynamically, defaulting to 1.0 if not found
+    gamma_val = gen_df.attrs.get('gamma', 1.0)
+    gamma = {i: gamma_val for i in model.Gens} 
 
     bus_gens = {b: [] for b in model.Buses}
     for _, row in gen_df.iterrows():

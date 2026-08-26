@@ -13,7 +13,7 @@ from gnn_erdos import Zone_ADMM_GNN, create_zonal_data, create_pyg_dataset
 # =============================================================================
 # 1. LOCAL CONTINUOUS ADMM SUBPROBLEM
 # =============================================================================
-def build_admm_zone(zone_id, zone_data, full_branch_df, tie_lines, boundary_buses, active_contingencies, is_ref_zone=False, ref_bus_id=None):
+def build_mi_aladin_zone(zone_id, zone_data, full_branch_df, tie_lines, boundary_buses, active_contingencies, is_ref_zone=False, ref_bus_id=None):
     """Builds the continuous ADMM Pyomo model using ONLY active contingencies."""
     model = pyo.ConcreteModel(name=f"ADMM_Zone_{zone_id}")
     
@@ -28,7 +28,6 @@ def build_admm_zone(zone_id, zone_data, full_branch_df, tie_lines, boundary_buse
     model.TieLines = pyo.Set(initialize=[int(x) for x in tie_lines])
     model.AllBranches = model.LocalBranches | model.TieLines
     
-    # NEURAL SCREENING: Only build constraints for flagged contingencies
     model.Kg_Global = pyo.Set(initialize=active_contingencies)
     model.Kg_and_Base = pyo.Set(initialize=['base'] + active_contingencies)
     
@@ -101,6 +100,7 @@ def build_admm_zone(zone_id, zone_data, full_branch_df, tie_lines, boundary_buse
         model.ref_bus_base = pyo.Constraint(expr=model.Va_base[ref_bus_id] == 0)
 
     # ==============================================================
+    # CRITICAL FIX: PREVENT FREE POWER LOOPHOLE
     # Force neighbor buses to perfectly match the ADMM target angle
     # ==============================================================
     def fix_neighbor_base_rule(m, b): return m.Va_base[b] == m.Va_target['base', b]
@@ -109,7 +109,7 @@ def build_admm_zone(zone_id, zone_data, full_branch_df, tie_lines, boundary_buse
     def fix_neighbor_k_rule(m, k, b): return m.Va_k[k, b] == m.Va_target[k, b]
     model.fix_neighbor_k_eq = pyo.Constraint(model.Kg_Global, model.NeighborBuses, rule=fix_neighbor_k_rule)
     # ==============================================================
-    
+
     def failed_gen_rule(m, k, i): return m.Pg_k[k, i] == 0.0 if k == i else pyo.Constraint.Skip
     model.failed_gen_eq = pyo.Constraint(model.Kg_Global, model.Gens, rule=failed_gen_rule)
 
@@ -155,7 +155,7 @@ def run_ml_aladin_scenario(case, zonal_data, load_vector, gnn_z1, gnn_z2, device
     graph_z1 = create_pyg_dataset(zonal_data['zone1'], load_z1, baseMVA)[0].to(device)
     graph_z2 = create_pyg_dataset(zonal_data['zone2'], load_z2, baseMVA)[0].to(device)
     
-    # 1. GNN Inference
+    # 1. GNN Inference (Acting as the Integer Oracle)
     with torch.no_grad():
         va_dummy = torch.zeros(1, num_global_kg + 1, num_boundaries, device=device)
         zk_dummy = torch.zeros(1, num_global_kg, device=device)
@@ -173,8 +173,8 @@ def run_ml_aladin_scenario(case, zonal_data, load_vector, gnn_z1, gnn_z2, device
     current_kg_and_base = ['base'] + active_k_list
 
     # 2. Build Continuous ADMM Models
-    model_z1 = build_admm_zone(1, zonal_data['zone1'], case['branch'], zonal_data['tie_lines'], boundary_buses, active_k_list, ref_bus in zone1_buses, ref_bus)
-    model_z2 = build_admm_zone(2, zonal_data['zone2'], case['branch'], zonal_data['tie_lines'], boundary_buses, active_k_list, ref_bus not in zone1_buses, ref_bus)
+    model_z1 = build_mi_aladin_zone(1, zonal_data['zone1'], case['branch'], zonal_data['tie_lines'], boundary_buses, active_k_list, ref_bus in zone1_buses, ref_bus)
+    model_z2 = build_mi_aladin_zone(2, zonal_data['zone2'], case['branch'], zonal_data['tie_lines'], boundary_buses, active_k_list, ref_bus not in zone1_buses, ref_bus)
 
     for b in model_z1.LocalBuses: model_z1.Pd[b].set_value(load_vector[b] / baseMVA)
     for b in model_z2.LocalBuses: model_z2.Pd[b].set_value(load_vector[b] / baseMVA)
@@ -182,7 +182,7 @@ def run_ml_aladin_scenario(case, zonal_data, load_vector, gnn_z1, gnn_z2, device
     solver = pyo.SolverFactory('gurobi')
     solver.options['OutputFlag'] = 0
 
-    # 3. PURE ADMM COORDINATION LOOP (NO QP!)
+    # 3. PURE ADMM COORDINATION LOOP
     u_va = {(k, b): 0.0 for k in current_kg_and_base for b in boundary_buses} 
     Va_z1 = {(k, b): 0.0 for k in current_kg_and_base for b in boundary_buses}
     Va_z2 = {(k, b): 0.0 for k in current_kg_and_base for b in boundary_buses}
@@ -239,63 +239,3 @@ def run_ml_aladin_scenario(case, zonal_data, load_vector, gnn_z1, gnn_z2, device
             pg_ml_pu[int(i)] = val if val is not None else 0.0
 
     return pg_ml_pu, time_ml_total, ml_iters, scenario_residuals
-
-# =============================================================================
-# 3. QUICK LOCAL TEST EXECUTION
-# =============================================================================
-if __name__ == "__main__":
-    os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
-    
-    parser = argparse.ArgumentParser(description="Run ML-Accelerated ADMM")
-    parser.add_argument('--case', type=str, required=True, help="e.g., pglib_opf_case14_ieee")
-    args = parser.parse_args()
-    
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"\n=======================================================")
-    print(f" TESTING ML-ADMM ON {args.case.upper()} ({device.type.upper()})")
-    print(f"=======================================================")
-
-    case_name = args.case
-    case_path = f'../excel_outputs/{case_name}.xlsx'
-    case = pd.read_excel(case_path, sheet_name=['baseMVA','bus','gen','gencost','branch'])
-    baseMVA = case['baseMVA']['baseMVA'][0]
-    case['gamma'], case['M_eta'] = 0.05, 1500
-
-    zero_gen_idx = [num for num, i in enumerate(case['gen'].Pmax.values / baseMVA) if (i == 0 and (case['gen'].Pmin.values / baseMVA)[num] == 0) or (case['gen'].Pmin.values / baseMVA)[num] < 0]
-    case['gen'].drop(index=zero_gen_idx, inplace=True)
-    case['gencost'].drop(index=zero_gen_idx, inplace=True)
-
-    total_buses = case['bus']['bus_i'].tolist()
-    midpoint = len(total_buses) // 2
-    zonal_data = create_zonal_data(case, total_buses[:midpoint], total_buses[midpoint:])
-    
-    num_boundaries = len(zonal_data['boundary_buses'])
-    num_global_kg = len(zonal_data['global_Kg'])
-    bus_list = sorted(case['bus']['bus_i'].tolist())
-
-    print("Loading Trained GNN Agents...")
-    gnn_z1 = Zone_ADMM_GNN(num_boundaries, num_global_kg).to(device)
-    gnn_z1.load_state_dict(torch.load("data/admm_models/zone1_gnn_agent.pth", map_location=device, weights_only=False))
-    gnn_z1.eval()
-
-    gnn_z2 = Zone_ADMM_GNN(num_boundaries, num_global_kg).to(device)
-    gnn_z2.load_state_dict(torch.load("data/admm_models/zone2_gnn_agent.pth", map_location=device, weights_only=False))
-    gnn_z2.eval()
-
-    load_profiles = pd.read_csv(f'data/{case_name}_generated_loads.csv')
-    load_vector = {b: load_profiles.iloc[0][f"Bus_{b}_Pd"] for b in bus_list}
-
-    print("Solving ML-ADMM Scenario 1...")
-    pg_ml_pu, time_ml, iters, final_res = run_ml_aladin_scenario(case, zonal_data, load_vector, gnn_z1, gnn_z2, device, baseMVA, verbose=True)
-    
-    cost = 0.0
-    for i, pg_val in pg_ml_pu.items():
-        row = case['gencost'][case['gencost']['gen_ID'] == i].iloc[0]
-        pg_mw = pg_val * baseMVA
-        cost += (row['c2'] * (pg_mw**2)) + (row['c1'] * pg_mw) + row['c0']
-
-    print(f"\n>>> FINAL VERIFICATION <<<")
-    print(f"Solve Time: {time_ml:.4f}s")
-    print(f"Iterations: {iters}")
-    print(f"Cost:       ${cost:.2f}")
-    print(f"=======================================================\n")
