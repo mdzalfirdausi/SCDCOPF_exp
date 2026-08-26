@@ -1,6 +1,7 @@
 import os
 import time
 import math
+import argparse
 import torch
 import numpy as np
 import pandas as pd
@@ -209,12 +210,16 @@ def solve_aladin_master_qp(x1_dict, x2_dict, g1_dict, g2_dict, H1_mat, H2_mat, o
 # 3. EXECUTION
 # =============================================================================
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Run ML-Accelerated ALADIN")
+    parser.add_argument('--case', type=str, required=True, help="e.g., pglib_opf_case14_ieee")
+    args = parser.parse_args()
+    
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"\n=======================================================")
     print(f" PIONEERING ML-ACCELERATED ALADIN ON {device.type.upper()}")
     print(f"=======================================================")
 
-    case_name = 'pglib_opf_case118_ieee'
+    case_name = args.case
     case_path = f'../excel_outputs/{case_name}.xlsx'
     case = pd.read_excel(case_path, sheet_name=['baseMVA','bus','gen','gencost','branch'])
     baseMVA = case['baseMVA']['baseMVA'][0]
@@ -242,11 +247,12 @@ if __name__ == "__main__":
     # A. LOAD TRAINED GNN MODELS
     print("Loading Trained GNN Agents...")
     gnn_z1 = Zone_ADMM_GNN(num_boundaries, num_global_kg).to(device)
-    gnn_z1.load_state_dict(torch.load("data/admm_models/zone1_gnn_agent.pth", map_location=device, weights_only=True))
+    # Changed weights_only=False to prevent pickle load errors
+    gnn_z1.load_state_dict(torch.load("data/admm_models/zone1_gnn_agent.pth", map_location=device, weights_only=False))
     gnn_z1.eval()
 
     gnn_z2 = Zone_ADMM_GNN(num_boundaries, num_global_kg).to(device)
-    gnn_z2.load_state_dict(torch.load("data/admm_models/zone2_gnn_agent.pth", map_location=device, weights_only=True))
+    gnn_z2.load_state_dict(torch.load("data/admm_models/zone2_gnn_agent.pth", map_location=device, weights_only=False))
     gnn_z2.eval()
 
     # B. PULL A LOAD SCENARIO
@@ -274,7 +280,6 @@ if __name__ == "__main__":
 
     graph_z1.batch = torch.zeros(graph_z1.x.size(0), dtype=torch.long, device=device)
     graph_z2.batch = torch.zeros(graph_z2.x.size(0), dtype=torch.long, device=device)
-    # ---------------------------------------------
 
     # C. GNN INFERENCE FOR BINARY MAPPING
     print("Executing GNN Inference for Binary Mapping...")
@@ -288,7 +293,6 @@ if __name__ == "__main__":
         _, _, zk_prob_z1 = gnn_z1(graph_z1, va_t_dummy, uva_dummy, zk_t_dummy, uzk_dummy)
         _, _, zk_prob_z2 = gnn_z2(graph_z2, va_t_dummy, uva_dummy, zk_t_dummy, uzk_dummy)
 
-        # Threshold probabilities into hard binaries
         zk_hard_z1 = (zk_prob_z1 > 0.5).int().squeeze().cpu().numpy()
         zk_hard_z2 = (zk_prob_z2 > 0.5).int().squeeze().cpu().numpy()
         
@@ -307,14 +311,17 @@ if __name__ == "__main__":
         idx = list(zonal_data['zone2']['bus']['bus_i']).index(b)
         model_z2.Pd[b].set_value(load_z2[0, idx])
 
-    # LOCK THE GNN PREDICTIONS INTO PYOMO
     for k_idx, k in enumerate(global_kg):
+        # Prevent indexing error by forcing singular numpy arrays into a 1D list shape if needed
+        z1_val = zk_hard_z1.item() if zk_hard_z1.size == 1 else zk_hard_z1[k_idx]
+        z2_val = zk_hard_z2.item() if zk_hard_z2.size == 1 else zk_hard_z2[k_idx]
+        
         for i in model_z1.Gens:
-            model_z1.xk[k, i].fix(zk_hard_z1[k_idx])
-            model_z1.zk[k].fix(zk_hard_z1[k_idx])
+            model_z1.xk[k, i].fix(z1_val)
+            model_z1.zk[k].fix(z1_val)
         for i in model_z2.Gens:
-            model_z2.xk[k, i].fix(zk_hard_z2[k_idx])
-            model_z2.zk[k].fix(zk_hard_z2[k_idx])
+            model_z2.xk[k, i].fix(z2_val)
+            model_z2.zk[k].fix(z2_val)
 
     # E. ALADIN CONTINUOUS COORDINATION
     print("\nStarting ALADIN Continuous Optimization...")

@@ -6,6 +6,7 @@ import torch.optim as optim
 import pandas as pd
 import numpy as np
 import math
+import argparse
 from torch_geometric.data import Data
 from torch_geometric.loader import DataLoader
 from torch_geometric.nn import GATConv, global_mean_pool
@@ -262,7 +263,11 @@ def train_agent_gnn(zone_name, z_data, load_data_np, num_boundaries, num_global_
 # 5. MAIN EXECUTION BLOCK
 # ==========================================
 if __name__ == "__main__":
-    case_name = 'pglib_opf_case118_ieee'
+    parser = argparse.ArgumentParser(description="Train Erdős-GNN Agent")
+    parser.add_argument('--case', type=str, required=True, help="e.g., pglib_opf_case14_ieee")
+    args = parser.parse_args()
+
+    case_name = args.case
     case_path = f'../excel_outputs/{case_name}.xlsx'
     csv_path = f'data/{case_name}_generated_loads.csv'
     rho_ADMM = 10000.0
@@ -279,7 +284,7 @@ if __name__ == "__main__":
     case['gencost'].drop(index=zero_gen_idx, inplace=True)
     
     # -------------------------------------------------------------
-    # FIX: Dynamically split zones based on Actual Bus IDs 
+    # Dynamically split zones based on Actual Bus IDs 
     # -------------------------------------------------------------
     total_buses = case['bus']['bus_i'].tolist()
     midpoint = len(total_buses) // 2
