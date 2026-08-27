@@ -195,14 +195,10 @@ def compute_zonal_erdos_loss(Pg_base, Va_local, zk_local, Pd_batch, Va_target, u
     # 5. ERDŐS VARIANCE PENALTY (Unsupervised Binary Forcing)
     erdos_binary_penalty = torch.sum(zk_local * (1.0 - zk_local), dim=1)
     
-    # ==============================================================
     # 6. SECURITY PROXY PENALTY (Fix for the "Lazy GNN")
-    # Penalizes the network heavily for outputting 0s. 
-    # This forces it to activate contingencies to protect the grid!
-    # ==============================================================
     security_penalty = torch.sum(1.0 - zk_local, dim=1) 
     
-    lambda_admm = 100.0 
+    lambda_admm = 1.0 
     beta_sec = 2000.0  # High penalty weight for ignoring security
     
     admm_loss = torch.mean(admm_va_linear + admm_va_quad + admm_zk_linear + admm_zk_quad)
@@ -280,7 +276,7 @@ if __name__ == "__main__":
     case_name = args.case
     case_path = f'../excel_outputs/{case_name}.xlsx'
     csv_path = f'data/{case_name}_generated_loads.csv'
-    rho_ADMM = 10000.0
+    rho_ADMM = 1000.0
     
     print(f"Loading Base Excel Data from {case_path}...")
     case = pd.read_excel(case_path, sheet_name=['baseMVA','bus','gen','gencost','branch'])
