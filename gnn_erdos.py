@@ -172,7 +172,7 @@ class Zone_ADMM_GNN(nn.Module):
 # 3. UNSUPERVISED ERDŐS ADMM LOSS 
 # ==========================================
 def compute_zonal_erdos_loss(Pg_base, Va_local, zk_local, Pd_batch, Va_target, u_va, zk_target, u_zk,
-                             c2, c1, c0, rho_ADMM=10000.0, lambda_bal=1e5, beta_erdos=50.0):
+                             c2, c1, c0, rho_ADMM=1000.0, lambda_bal=1e5, beta_erdos=50.0):
     
     # 1. Economic Cost
     gen_cost = torch.sum(c2 * (Pg_base ** 2) + c1 * Pg_base + c0, dim=1)
@@ -215,7 +215,7 @@ def compute_zonal_erdos_loss(Pg_base, Va_local, zk_local, Pd_batch, Va_target, u
 # ==========================================
 # 4. TRAINING ENGINE
 # ==========================================
-def train_agent_gnn(zone_name, z_data, load_data_np, num_boundaries, num_global_kg, baseMVA, rho_ADMM, epochs=150, batch_size=128):
+def train_agent_gnn(zone_name, case_name, z_data, load_data_np, num_boundaries, num_global_kg, baseMVA, rho_ADMM, epochs=150, batch_size=128):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"\n--- Initializing GNN Training for {zone_name.upper()} on {device} ---")
     
@@ -261,7 +261,7 @@ def train_agent_gnn(zone_name, z_data, load_data_np, num_boundaries, num_global_
             print(f"Epoch {epoch+1:3d}/{epochs} | Unsupervised Erdős Loss: {epoch_loss/len(dataloader):.2f}")
             
     os.makedirs('data/admm_models', exist_ok=True)
-    save_path = f"data/admm_models/{zone_name}_gnn_agent.pth"
+    save_path = f"data/admm_models/{zone_name}_gnn_agent_{case_name}.pth"
     torch.save(net.state_dict(), save_path)
     print(f"[{zone_name.upper()}] GNN Agent Saved to: {save_path}")
 
@@ -308,7 +308,7 @@ if __name__ == "__main__":
     Pd_z1_np = load_data[:, :num_buses_z1]
     Pd_z2_np = load_data[:, num_buses_z1:]
     epochs = 1500
-    train_agent_gnn('zone1', zonal_data['zone1'], Pd_z1_np, num_boundaries, num_global_kg, baseMVA, rho_ADMM, epochs=epochs)
-    train_agent_gnn('zone2', zonal_data['zone2'], Pd_z2_np, num_boundaries, num_global_kg, baseMVA, rho_ADMM, epochs=epochs)
-    
+
+    train_agent_gnn('zone1', case_name, zonal_data['zone1'], Pd_z1_np, num_boundaries, num_global_kg, baseMVA, rho_ADMM, epochs=epochs)
+    train_agent_gnn('zone2', case_name, zonal_data['zone2'], Pd_z2_np, num_boundaries, num_global_kg, baseMVA, rho_ADMM, epochs=epochs)
     print("\n--- Both agents successfully trained! ---")
