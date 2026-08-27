@@ -15,8 +15,7 @@ import matplotlib.pyplot as plt
 
 # Import baseline functions and the standardized ML-ADMM runner
 from dcopf_model import build_ptdf, run_ccga_algorithm, check_contingency_violations, calculate_primary_response
-from gnn_erdos import Zone_ADMM_GNN, create_zonal_data, create_pyg_dataset
-# from run_ml_aladin import run_ml_aladin_scenario
+from gnn_erdos import Zone_ADMM_GNN, create_zonal_data
 from run_ml_admm import run_ml_admm_scenario
 
 def calculate_generation_cost(pg_dict, case_data, baseMVA):

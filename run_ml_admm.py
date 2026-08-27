@@ -53,17 +53,17 @@ def build_mi_admm_zone(zone_id, zone_data, full_branch_df, tie_lines, boundary_b
     for _, row in zone_data['gen'].iterrows(): bus_gens[int(row['bus_i'])].append(int(row['gen_ID']))
 
     # PURE ADMM PENALTY PARAMETERS
-    model.rho = pyo.Param(initialize=10000.0, mutable=True)
+    model.rho = pyo.Param(initialize=1000.0, mutable=True)
     model.u_va = pyo.Param(model.Kg_and_Base, model.BoundaryBuses, initialize=0.0, mutable=True)
     model.Va_target = pyo.Param(model.Kg_and_Base, model.BoundaryBuses, initialize=0.0, mutable=True)
 
     model.Pg_base = pyo.Var(model.Gens, bounds=lambda m, i: (pmin[i], pmax[i]))
-    model.Va_base = pyo.Var(model.AllBuses, bounds=(-math.pi, math.pi))
+    model.Va_base = pyo.Var(model.AllBuses, bounds=(-10.0 * math.pi, 10.0 * math.pi))
     model.Pf_base = pyo.Var(model.AllBranches)
     model.eta_base = pyo.Var(model.AllBranches, domain=pyo.NonNegativeReals)
 
     model.Pg_k = pyo.Var(model.Kg_Global, model.Gens, bounds=lambda m, k, i: (pmin[i], pmax[i]))
-    model.Va_k = pyo.Var(model.Kg_Global, model.AllBuses, bounds=(-math.pi, math.pi))
+    model.Va_k = pyo.Var(model.Kg_Global, model.AllBuses, bounds=(-10.0 * math.pi, 10.0 * math.pi))
     model.Pf_k = pyo.Var(model.Kg_Global, model.AllBranches)
     model.eta_k = pyo.Var(model.Kg_Global, model.AllBranches, domain=pyo.NonNegativeReals)
     
@@ -170,21 +170,22 @@ def run_ml_admm_scenario(case, zonal_data, load_vector, gnn_z1, gnn_z2, device, 
 
     solver = pyo.SolverFactory('gurobi')
     solver.options['OutputFlag'] = 0
+    solver.options['NumericFocus'] = 1  # Helps Gurobi handle ill-conditioned matrices safely
 
     # 3. GLOBAL CONSENSUS ADMM WITH RESIDUAL BALANCING
     lam_z1 = {(k, b): 0.0 for k in current_kg_and_base for b in boundary_buses}
     lam_z2 = {(k, b): 0.0 for k in current_kg_and_base for b in boundary_buses}
     z_global = {(k, b): 0.0 for k in current_kg_and_base for b in boundary_buses}
     
-    rho = 10000.0  
+    rho = 1000.0  
     model_z1.rho.set_value(rho)
     model_z2.rho.set_value(rho)
     
-    tol = 1e-4
+    tol = 1e-3
     ml_iters = 0
     scenario_residuals = []
 
-    for itr in range(1, 100):
+    for itr in range(1, 250):
         ml_iters = itr
         
         # --- Solve Zone 1 ---
