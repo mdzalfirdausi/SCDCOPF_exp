@@ -1,27 +1,27 @@
 #!/bin/bash
 
-#SBATCH --job-name=scdcopf
+#SBATCH --job-name=erdos_train
 #SBATCH --partition=main
 
+# Disable default slurm logs to use our custom exec routing
 #SBATCH --output=/dev/null
 #SBATCH --error=/dev/null
 
-# Maximum allowed by the main partition
-#SBATCH --time=02:00:00
+# Training takes a bit longer, so we increase the time limit
+#SBATCH --time=4:00:00
 
-# One CPU per independent Python process
-#SBATCH --cpus-per-task=1
+# PyTorch Geometric trains faster with a few extra CPU cores for data loading
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=16G
 
-# Start conservatively; increase after measuring actual usage
-#SBATCH --mem=8G
-
-#SBATCH --array=0-9
-
-LOG_DIR="logs/${SLURM_ARRAY_JOB_ID}"
+# =========================================================
+# 0. CUSTOM LOG ROUTING (erdos_ prefix)
+# =========================================================
+LOG_DIR="logs/erdos_${SLURM_JOB_ID}"
 mkdir -p "$LOG_DIR"
 
-exec > "${LOG_DIR}/${SLURM_ARRAY_TASK_ID}.out" \
-     2> "${LOG_DIR}/${SLURM_ARRAY_TASK_ID}.err"
+exec > "${LOG_DIR}/erdos_${SLURM_JOB_ID}.out" \
+     2> "${LOG_DIR}/erdos_${SLURM_JOB_ID}.err"
 
 # =========================================================
 # 1. CASE / ARGUMENT PARSING
@@ -49,7 +49,7 @@ done
 # --case is mandatory
 if [[ -z "$CASE_NAME" ]]; then
     echo "ERROR: --case is required."
-    echo "Usage: sbatch submit_iss.sh --case <case_name>"
+    echo "Usage: sbatch submit_erdos.sh --case <case_name>"
     exit 1
 fi
 
@@ -59,14 +59,11 @@ fi
 
 echo "============================================"
 echo "Job ID:        $SLURM_JOB_ID"
-echo "Array Job ID:  $SLURM_ARRAY_JOB_ID"
-echo "Array Task ID: $SLURM_ARRAY_TASK_ID"
 echo "Node:          $(hostname)"
 echo "CPUs:          $SLURM_CPUS_PER_TASK"
 echo "Case:          $CASE_NAME"
 echo "Start time:    $(date)"
 echo "============================================"
-
 
 # =========================================================
 # 3. CONDA ENVIRONMENT
@@ -81,7 +78,6 @@ echo "Conda environment: $CONDA_DEFAULT_ENV"
 echo "Python: $(which python)"
 python --version
 
-
 # =========================================================
 # 4. PREVENT EACH JOB FROM SPAWNING EXTRA CPU THREADS
 # =========================================================
@@ -91,12 +87,13 @@ export MKL_NUM_THREADS=$SLURM_CPUS_PER_TASK
 export OPENBLAS_NUM_THREADS=$SLURM_CPUS_PER_TASK
 export NUMEXPR_NUM_THREADS=$SLURM_CPUS_PER_TASK
 
-
 # =========================================================
 # 5. RUN
 # =========================================================
 
-python run_experiments.py \
+echo "Starting Unsupervised Erdős-GNN Training..."
+
+python gnn_erdos.py \
     --case "$CASE_NAME"
 
 EXIT_CODE=$?
