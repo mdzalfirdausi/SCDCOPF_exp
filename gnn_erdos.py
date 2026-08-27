@@ -301,8 +301,8 @@ if __name__ == "__main__":
     load_data = pd.read_csv(csv_path).values / baseMVA
     Pd_z1_np = load_data[:, :num_buses_z1]
     Pd_z2_np = load_data[:, num_buses_z1:]
-    
-    train_agent_gnn('zone1', zonal_data['zone1'], Pd_z1_np, num_boundaries, num_global_kg, baseMVA, rho_ADMM)
-    train_agent_gnn('zone2', zonal_data['zone2'], Pd_z2_np, num_boundaries, num_global_kg, baseMVA, rho_ADMM)
+    epochs = 1500
+    train_agent_gnn('zone1', zonal_data['zone1'], Pd_z1_np, num_boundaries, num_global_kg, baseMVA, rho_ADMM, epochs=epochs)
+    train_agent_gnn('zone2', zonal_data['zone2'], Pd_z2_np, num_boundaries, num_global_kg, baseMVA, rho_ADMM, epochs=epochs)
     
     print("\n--- Both agents successfully trained! ---")

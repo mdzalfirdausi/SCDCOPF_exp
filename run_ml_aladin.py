@@ -67,7 +67,7 @@ def build_mi_aladin_zone(zone_id, zone_data, full_branch_df, tie_lines, boundary
     model.Pf_k = pyo.Var(model.Kg_Global, model.AllBranches)
     model.eta_k = pyo.Var(model.Kg_Global, model.AllBranches, domain=pyo.NonNegativeReals)
     
-    model.xk = pyo.Var(model.Kg_Global, model.Gens, bounds=(0, 1))
+    model.xk = pyo.Var(model.Kg_Global, model.Gens, domain=pyo.Binary)
 
     def get_va(m, k, b): return m.Va_base[b] if k == 'base' else m.Va_k[k, b]
     
@@ -98,17 +98,6 @@ def build_mi_aladin_zone(zone_id, zone_data, full_branch_df, tie_lines, boundary
 
     if is_ref_zone and ref_bus_id in model.LocalBuses:
         model.ref_bus_base = pyo.Constraint(expr=model.Va_base[ref_bus_id] == 0)
-
-    # ==============================================================
-    # CRITICAL FIX: PREVENT FREE POWER LOOPHOLE
-    # Force neighbor buses to perfectly match the ADMM target angle
-    # ==============================================================
-    def fix_neighbor_base_rule(m, b): return m.Va_base[b] == m.Va_target['base', b]
-    model.fix_neighbor_base_eq = pyo.Constraint(model.NeighborBuses, rule=fix_neighbor_base_rule)
-
-    def fix_neighbor_k_rule(m, k, b): return m.Va_k[k, b] == m.Va_target[k, b]
-    model.fix_neighbor_k_eq = pyo.Constraint(model.Kg_Global, model.NeighborBuses, rule=fix_neighbor_k_rule)
-    # ==============================================================
 
     def failed_gen_rule(m, k, i): return m.Pg_k[k, i] == 0.0 if k == i else pyo.Constraint.Skip
     model.failed_gen_eq = pyo.Constraint(model.Kg_Global, model.Gens, rule=failed_gen_rule)
@@ -169,7 +158,7 @@ def run_ml_aladin_scenario(case, zonal_data, load_vector, gnn_z1, gnn_z2, device
         z1_val = zk_hard_z1.item() if zk_hard_z1.size == 1 else zk_hard_z1[k_idx]
         z2_val = zk_hard_z2.item() if zk_hard_z2.size == 1 else zk_hard_z2[k_idx]
         if z1_val == 1 or z2_val == 1: active_k_list.append(k)
-            
+
     current_kg_and_base = ['base'] + active_k_list
 
     # 2. Build Continuous ADMM Models
@@ -182,12 +171,16 @@ def run_ml_aladin_scenario(case, zonal_data, load_vector, gnn_z1, gnn_z2, device
     solver = pyo.SolverFactory('gurobi')
     solver.options['OutputFlag'] = 0
 
-    # 3. PURE ADMM COORDINATION LOOP
-    u_va = {(k, b): 0.0 for k in current_kg_and_base for b in boundary_buses} 
-    Va_z1 = {(k, b): 0.0 for k in current_kg_and_base for b in boundary_buses}
-    Va_z2 = {(k, b): 0.0 for k in current_kg_and_base for b in boundary_buses}
+    # 3. GLOBAL CONSENSUS ADMM WITH RESIDUAL BALANCING
+    lam_z1 = {(k, b): 0.0 for k in current_kg_and_base for b in boundary_buses}
+    lam_z2 = {(k, b): 0.0 for k in current_kg_and_base for b in boundary_buses}
+    z_global = {(k, b): 0.0 for k in current_kg_and_base for b in boundary_buses}
     
-    rho, tol = 10000.0, 1e-4
+    rho = 10000.0  
+    model_z1.rho.set_value(rho)
+    model_z2.rho.set_value(rho)
+    
+    tol = 1e-4
     ml_iters = 0
     scenario_residuals = []
 
@@ -197,37 +190,64 @@ def run_ml_aladin_scenario(case, zonal_data, load_vector, gnn_z1, gnn_z2, device
         # --- Solve Zone 1 ---
         for b in boundary_buses:
             for k in current_kg_and_base:
-                model_z1.Va_target[k, b].set_value(Va_z2[k, b])
-                model_z1.u_va[k, b].set_value(u_va[k, b])
+                model_z1.Va_target[k, b].set_value(z_global[k, b])
+                model_z1.u_va[k, b].set_value(lam_z1[k, b])
         solver.solve(model_z1)
+        
+        Va_z1 = {}
         for b in boundary_buses:
             Va_z1['base', b] = pyo.value(model_z1.Va_base[b])
-            for k in active_k_list: Va_z1[k, b] = pyo.value(model_z1.Va_k[k, b])
-            
+            for k in active_k_list:
+                Va_z1[k, b] = pyo.value(model_z1.Va_k[k, b])
+
         # --- Solve Zone 2 ---
         for b in boundary_buses:
             for k in current_kg_and_base:
-                model_z2.Va_target[k, b].set_value(Va_z1[k, b])
-                model_z2.u_va[k, b].set_value(u_va[k, b])
+                model_z2.Va_target[k, b].set_value(z_global[k, b])
+                model_z2.u_va[k, b].set_value(lam_z2[k, b])
         solver.solve(model_z2)
+        
+        Va_z2 = {}
         for b in boundary_buses:
             Va_z2['base', b] = pyo.value(model_z2.Va_base[b])
-            for k in active_k_list: Va_z2[k, b] = pyo.value(model_z2.Va_k[k, b])
+            for k in active_k_list:
+                Va_z2[k, b] = pyo.value(model_z2.Va_k[k, b])
 
-        # --- True Primal Residual Check ---
-        res_va = sum((Va_z1[k, b] - Va_z2[k, b])**2 for k in current_kg_and_base for b in boundary_buses)
-        true_primal_res = math.sqrt(res_va)
+        # --- Global Consensus & Dual Update ---
+        primal_res_sq = 0.0
+        dual_res_sq = 0.0
+        
+        for key in z_global.keys():
+            z_old = z_global[key]
+            # Global consensus variable is the average of the two zones
+            z_global[key] = (Va_z1[key] + Va_z2[key]) / 2.0
+            
+            # Dual updates
+            lam_z1[key] += rho * (Va_z1[key] - z_global[key])
+            lam_z2[key] += rho * (Va_z2[key] - z_global[key])
+            
+            # Residuals for stopping criteria
+            primal_res_sq += (Va_z1[key] - z_global[key])**2 + (Va_z2[key] - z_global[key])**2
+            dual_res_sq += (rho * (z_global[key] - z_old))**2
+            
+        true_primal_res = math.sqrt(primal_res_sq)
+        true_dual_res = math.sqrt(dual_res_sq)
         scenario_residuals.append(true_primal_res)
         
-        if verbose: print(f"Iter {itr:02d} | True Primal Residual: {true_primal_res:.6f}")
+        if verbose: 
+            print(f"Iter {itr:02d} | Primal Res: {true_primal_res:.6f} | Dual Res: {true_dual_res:.6f} | Rho: {rho}")
         
-        if true_primal_res <= tol:
+        if true_primal_res <= tol and true_dual_res <= tol:
             break
             
-        # --- Pure Gradient Ascent Dual Update ---
-        for b in boundary_buses:
-            for k in current_kg_and_base:
-                u_va[k, b] += rho * (Va_z1[k, b] - Va_z2[k, b])
+        # --- Residual Balancing (Dynamic Rho) ---
+        if true_primal_res > 10 * true_dual_res:
+            rho = rho * 2.0
+        elif true_dual_res > 10 * true_primal_res:
+            rho = rho / 2.0
+            
+        model_z1.rho.set_value(rho)
+        model_z2.rho.set_value(rho)
                 
     time_ml_total = time.time() - start_ml
 
