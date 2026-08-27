@@ -16,7 +16,8 @@ import matplotlib.pyplot as plt
 # Import baseline functions and the standardized ML-ADMM runner
 from dcopf_model import build_ptdf, run_ccga_algorithm, check_contingency_violations, calculate_primary_response
 from gnn_erdos import Zone_ADMM_GNN, create_zonal_data, create_pyg_dataset
-from run_ml_aladin import run_ml_aladin_scenario
+# from run_ml_aladin import run_ml_aladin_scenario
+from run_ml_admm import run_ml_admm_scenario
 
 def calculate_generation_cost(pg_dict, case_data, baseMVA):
     cost = 0.0
@@ -134,7 +135,7 @@ def evaluate_benchmarks():
         # =========================================================
         # PROPOSED: STANDARDIZED ML-ADMM
         # =========================================================
-        pg_ml_pu, time_ml_total, ml_iters, scenario_residuals = run_ml_aladin_scenario(
+        pg_ml_pu, time_ml_total, ml_iters, scenario_residuals = run_ml_admm_scenario(
             case, zonal_data, load_vector, gnn_z1, gnn_z2, device, baseMVA, verbose=False
         )
         all_residuals.append(scenario_residuals)

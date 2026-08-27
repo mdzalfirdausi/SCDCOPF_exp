@@ -13,7 +13,7 @@ from gnn_erdos import Zone_ADMM_GNN, create_zonal_data, create_pyg_dataset
 # =============================================================================
 # 1. LOCAL CONTINUOUS ADMM SUBPROBLEM
 # =============================================================================
-def build_mi_aladin_zone(zone_id, zone_data, full_branch_df, tie_lines, boundary_buses, active_contingencies, is_ref_zone=False, ref_bus_id=None):
+def build_mi_admm_zone(zone_id, zone_data, full_branch_df, tie_lines, boundary_buses, active_contingencies, is_ref_zone=False, ref_bus_id=None):
     """Builds the continuous ADMM Pyomo model using ONLY active contingencies."""
     model = pyo.ConcreteModel(name=f"ADMM_Zone_{zone_id}")
     
@@ -126,8 +126,8 @@ def build_mi_aladin_zone(zone_id, zone_data, full_branch_df, tie_lines, boundary
 # =============================================================================
 # 2. STANDARDIZED MAIN FUNCTION TO IMPORT
 # =============================================================================
-def run_ml_aladin_scenario(case, zonal_data, load_vector, gnn_z1, gnn_z2, device, baseMVA, verbose=False):
-    """Callable function that runs the complete ML + ADMM Polish pipeline."""
+def run_ml_admm_scenario(case, zonal_data, load_vector, gnn_z1, gnn_z2, device, baseMVA, verbose=False):
+    """Callable function that runs the complete ML + ADMM pipeline."""
     start_ml = time.time()
     
     bus_list = sorted(case['bus']['bus_i'].tolist())
@@ -162,8 +162,8 @@ def run_ml_aladin_scenario(case, zonal_data, load_vector, gnn_z1, gnn_z2, device
     current_kg_and_base = ['base'] + active_k_list
 
     # 2. Build Continuous ADMM Models
-    model_z1 = build_mi_aladin_zone(1, zonal_data['zone1'], case['branch'], zonal_data['tie_lines'], boundary_buses, active_k_list, ref_bus in zone1_buses, ref_bus)
-    model_z2 = build_mi_aladin_zone(2, zonal_data['zone2'], case['branch'], zonal_data['tie_lines'], boundary_buses, active_k_list, ref_bus not in zone1_buses, ref_bus)
+    model_z1 = build_mi_admm_zone(1, zonal_data['zone1'], case['branch'], zonal_data['tie_lines'], boundary_buses, active_k_list, ref_bus in zone1_buses, ref_bus)
+    model_z2 = build_mi_admm_zone(2, zonal_data['zone2'], case['branch'], zonal_data['tie_lines'], boundary_buses, active_k_list, ref_bus not in zone1_buses, ref_bus)
 
     for b in model_z1.LocalBuses: model_z1.Pd[b].set_value(load_vector[b] / baseMVA)
     for b in model_z2.LocalBuses: model_z2.Pd[b].set_value(load_vector[b] / baseMVA)
