@@ -11,8 +11,8 @@
 #SBATCH --time=4:00:00
 
 # PyTorch Geometric trains faster with a few extra CPU cores for data loading
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=16G
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=64G
 
 # =========================================================
 # 0. CUSTOM LOG ROUTING (erdos_ prefix)
