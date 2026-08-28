@@ -76,13 +76,9 @@ def build_mi_admm_zone(zone_id, zone_data, full_branch_df, tie_lines, boundary_b
         gen_cost = sum(c2[i] * m.Pg_base[i]**2 + c1[i] * m.Pg_base[i] + c0[i] for i in m.Gens)
         penalty_cost = zone_data.get('M_eta', 1500) * (sum(m.eta_base[l] for l in m.AllBranches) + sum(m.eta_k[k, l] for k in m.Kg_Global for l in m.AllBranches))
         
-        if zone_id == 1:
-            admm_va = sum(m.u_va[k, b] * (get_va(m, k, b) - m.Va_target[k, b]) + (m.rho / 2.0) * (get_va(m, k, b) - m.Va_target[k, b])**2 for k in m.Kg_and_Base for b in m.BoundaryBuses)
-        else:
-            admm_va = sum(m.u_va[k, b] * (m.Va_target[k, b] - get_va(m, k, b)) + (m.rho / 2.0) * (m.Va_target[k, b] - get_va(m, k, b))**2 for k in m.Kg_and_Base for b in m.BoundaryBuses)
+        admm_va = sum(m.u_va[k, b] * (get_va(m, k, b) - m.Va_target[k, b]) + (m.rho / 2.0) * (get_va(m, k, b) - m.Va_target[k, b])**2 for k in m.Kg_and_Base for b in m.BoundaryBuses)
             
-        return gen_cost + penalty_cost + admm_va
-        
+        return gen_cost + penalty_cost + admm_va 
     model.obj = pyo.Objective(rule=obj_rule, sense=pyo.minimize)
     
     def flow_base_rule(m, l): return m.Pf_base[l] == susceptance[l] * (m.Va_base[branch_ends[l][0]] - m.Va_base[branch_ends[l][1]])
@@ -170,7 +166,8 @@ def run_ml_admm_scenario(case, zonal_data, load_vector, gnn_z1, gnn_z2, device, 
 
     solver = pyo.SolverFactory('gurobi')
     solver.options['OutputFlag'] = 0
-    solver.options['NumericFocus'] = 1  # Helps Gurobi handle ill-conditioned matrices safely
+    solver.options['NumericFocus'] = 1
+    solver.options['MIPGap'] = 0.01 
 
     # 3. GLOBAL CONSENSUS ADMM WITH RESIDUAL BALANCING
     lam_z1 = {(k, b): 0.0 for k in current_kg_and_base for b in boundary_buses}
@@ -181,7 +178,7 @@ def run_ml_admm_scenario(case, zonal_data, load_vector, gnn_z1, gnn_z2, device, 
     model_z1.rho.set_value(rho)
     model_z2.rho.set_value(rho)
     
-    tol = 1e-3
+    tol = 1e-2
     ml_iters = 0
     scenario_residuals = []
 
@@ -241,11 +238,11 @@ def run_ml_admm_scenario(case, zonal_data, load_vector, gnn_z1, gnn_z2, device, 
         if true_primal_res <= tol and true_dual_res <= tol:
             break
             
-        # --- Residual Balancing (Dynamic Rho) ---
-        if true_primal_res > 10 * true_dual_res:
-            rho = rho * 2.0
-        elif true_dual_res > 10 * true_primal_res:
-            rho = rho / 2.0
+        # # --- Residual Balancing (Dynamic Rho) ---
+        # if true_primal_res > 10 * true_dual_res:
+        #     rho = rho * 2.0
+        # elif true_dual_res > 10 * true_primal_res:
+        #     rho = rho / 2.0
             
         model_z1.rho.set_value(rho)
         model_z2.rho.set_value(rho)

@@ -304,27 +304,31 @@ def build_and_solve_ccga_master(bus_df, gen_df, branch_df, cost_df, load_vector,
     optimal_g = {i: pyo.value(model.Pg[i]) * baseMVA for i in model.Gens}
     return optimal_g, results.solver.termination_condition
 
-def run_ccga_algorithm(bus_df, gen_df, branch_df, cost_df, load_vector, PTDF_matrix):
+def run_ccga_algorithm(bus, gen, branch, gencost, load_vector, PTDF_matrix, initial_active_S=None):
     """Executes the CCGA Loop."""
-    active_S = [] 
+    active_S = initial_active_S.copy() if initial_active_S is not None else []
     epsilon = 0.05 / 100.0 # Tolerance converted to per-unit
     iteration = 0
     
-    bus_gen_map = gen_df.set_index('gen_ID')['bus_i'].to_dict()
+    bus_gen_map = gen.set_index('gen_ID')['bus_i'].to_dict()
     
     while True:
+        # 1. FIXED: Pass the clean argument names
         optimal_g, status = build_and_solve_ccga_master(
-            bus_df, gen_df, branch_df, cost_df, load_vector, active_S
+            bus, gen, branch, gencost, load_vector, active_S
         )
         
         global_max_violation = 0.0
         worst_contingency = None
         worst_line = None
         
-        for s in gen_df['gen_ID']:
-            n_s, g_s = calculate_primary_response(optimal_g, s, gen_df, load_vector)
+        # 2. FIXED: Use 'gen' instead of 'gen_df'
+        for s in gen['gen_ID']:
+            # 3. FIXED: Use 'gen' instead of 'gen_df'
+            n_s, g_s = calculate_primary_response(optimal_g, s, gen, load_vector)
             
-            max_viol, line_idx = check_contingency_violations(g_s, PTDF_matrix, load_vector, branch_df, bus_gen_map)
+            # 4. FIXED: Use 'branch' instead of 'branch_df'
+            max_viol, line_idx = check_contingency_violations(g_s, PTDF_matrix, load_vector, branch, bus_gen_map)
             
             if max_viol > global_max_violation:
                 global_max_violation = max_viol

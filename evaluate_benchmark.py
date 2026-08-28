@@ -16,7 +16,7 @@ import matplotlib.pyplot as plt
 # Import baseline functions and the standardized ML-ADMM runner
 from dcopf_model import build_ptdf, run_ccga_algorithm, check_contingency_violations, calculate_primary_response
 from gnn_erdos import Zone_ADMM_GNN, create_zonal_data
-from run_ml_admm import run_ml_admm_scenario
+from run_ml_ccga import run_ml_ccga_scenario
 
 def calculate_generation_cost(pg_dict, case_data, baseMVA):
     cost = 0.0
@@ -74,9 +74,6 @@ def evaluate_benchmarks():
     case['gamma'], case['M_eta'] = 1, 1500
     case['gen'].attrs['gamma'] = case['gamma'] 
     
-    # ADD THIS LINE: Attach gamma to the generator dataframe so the CCGA baseline can read it
-    case['gen'].attrs['gamma'] = case['gamma']
-
     zero_gen_idx = [num for num, i in enumerate(case['gen'].Pmax.values / baseMVA) if (i == 0 and (case['gen'].Pmin.values / baseMVA)[num] == 0) or (case['gen'].Pmin.values / baseMVA)[num] < 0]
     case['gen'].drop(index=zero_gen_idx, inplace=True)
     case['gencost'].drop(index=zero_gen_idx, inplace=True)
@@ -134,10 +131,10 @@ def evaluate_benchmarks():
         # =========================================================
         # PROPOSED: STANDARDIZED ML-ADMM
         # =========================================================
-        pg_ml_pu, time_ml_total, ml_iters, scenario_residuals = run_ml_admm_scenario(
-            case, zonal_data, load_vector, gnn_z1, gnn_z2, device, baseMVA, verbose=False
+        pg_ml_pu, time_ml_total, ml_iters, predicted_k = run_ml_ccga_scenario(
+            case, zonal_data, load_vector, PTDF_matrix, gnn_z1, gnn_z2, device, baseMVA, verbose=True
         )
-        all_residuals.append(scenario_residuals)
+        # all_residuals.append(scenario_residuals)
 
         cost_ml = calculate_generation_cost(pg_ml_pu, case, baseMVA)
         
@@ -173,20 +170,6 @@ def evaluate_benchmarks():
     print(f" Average Optimality Gap: {df_results['Optimality_Gap_%'].mean():.4f}%")
     print(f" Maximum Overall Violation: {df_results['Max_Violation_MW'].max():.4f} MW")
     print(f"=======================================================\n")
-
-    if len(all_residuals) > 0 and len(all_residuals[-1]) > 0:
-        plt.figure(figsize=(8, 5))
-        plt.plot(range(1, len(all_residuals[-1])+1), all_residuals[-1], marker='o', linestyle='-', color='b')
-        plt.yscale('log')
-        plt.axhline(y=1e-4, color='r', linestyle='--', label='Tolerance ($10^{-4}$)')
-        plt.title('ML-ADMM Primal Residual Convergence')
-        plt.xlabel('ADMM Iteration')
-        plt.ylabel('Primal Residual (Log Scale)')
-        plt.legend()
-        plt.grid(True, which="both", ls="--", alpha=0.5)
-        plot_path = f"data/paper_figs/{case_name}_convergence_plot.png"
-        plt.savefig(plot_path)
-        print(f"Convergence plot saved to {plot_path}")
 
 if __name__ == "__main__":
     evaluate_benchmarks()
