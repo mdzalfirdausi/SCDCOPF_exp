@@ -65,11 +65,13 @@ def run_ml_ccga_scenario(case, zonal_data, load_vector, PTDF_matrix, gnn_z1, gnn
     # 3. WARM-STARTED CCGA EXECUTION
     # =========================================================
     # Pass the filtered active contingencies directly into the CCGA solver
-    pg_ml_pu, status, ccga_iters, final_S = run_ccga_algorithm(
+    pg_ml_mw, status, ccga_iters, final_S = run_ccga_algorithm(
         case['bus'], case['gen'], case['branch'], case['gencost'], 
         load_vector, PTDF_matrix, 
         initial_active_S=predicted_active_k
     )
+    
+    pg_ml_pu = {k: v / baseMVA for k, v in pg_ml_mw.items()}
     
     time_ml_total = time.time() - start_ml
 
