@@ -8,7 +8,7 @@ from gnn_erdos import create_pyg_dataset
 from dcopf_model import run_ccga_algorithm
 
 def run_ml_ccga_scenario(case, zonal_data, load_vector, PTDF_matrix, gnn_z1, gnn_z2, device, baseMVA, verbose=False):
-    """Callable function that runs the GNN-Accelerated CCGA pipeline."""
+    """Callable function that runs the GNN-Accelerated CCGA pipeline with Top-K Filtering."""
     start_ml = time.time()
     
     bus_list = sorted(case['bus']['bus_i'].tolist())
@@ -34,25 +34,37 @@ def run_ml_ccga_scenario(case, zonal_data, load_vector, PTDF_matrix, gnn_z1, gnn
         _, _, zk_prob_z1 = gnn_z1(graph_z1, va_dummy, va_dummy, zk_dummy, zk_dummy)
         _, _, zk_prob_z2 = gnn_z2(graph_z2, va_dummy, va_dummy, zk_dummy, zk_dummy)
         
-        zk_hard_z1 = (zk_prob_z1 > 0.5).int().squeeze().cpu().numpy()
-        zk_hard_z2 = (zk_prob_z2 > 0.5).int().squeeze().cpu().numpy()
+        # Extract continuous probabilities instead of hard integers
+        prob_z1 = zk_prob_z1.squeeze().cpu().numpy()
+        prob_z2 = zk_prob_z2.squeeze().cpu().numpy()
 
-    predicted_active_k = []
+    # Handle edge case where there is only 1 contingency (0-d array)
+    if prob_z1.ndim == 0: prob_z1 = np.expand_dims(prob_z1, 0)
+    if prob_z2.ndim == 0: prob_z2 = np.expand_dims(prob_z2, 0)
+
+    # Aggregate probabilities: take the maximum threat level predicted by either zone
+    contingency_probs = []
     for k_idx, k in enumerate(global_kg):
-        z1_val = zk_hard_z1.item() if zk_hard_z1.size == 1 else zk_hard_z1[k_idx]
-        z2_val = zk_hard_z2.item() if zk_hard_z2.size == 1 else zk_hard_z2[k_idx]
+        max_prob = max(prob_z1[k_idx], prob_z2[k_idx])
+        contingency_probs.append((k, max_prob))
         
-        # If either zone's GNN flags the contingency as active, trust it
-        if z1_val == 1 or z2_val == 1: 
-            predicted_active_k.append(k)
+    # Sort contingencies by highest probability descending
+    contingency_probs.sort(key=lambda x: x[1], reverse=True)
+    
+    # =========================================================
+    # 2. TOP-K FILTERING
+    # =========================================================
+    # Only take the Top 4 contingencies (to match CCGA's natural active set size)
+    TOP_K = 4
+    predicted_active_k = [k for k, p in contingency_probs if p > 0.5][:TOP_K]
 
     if verbose:
-        print(f"      -> GNN Oracle predicted {len(predicted_active_k)} active contingencies.")
+        print(f"      -> GNN Oracle predicted {len(predicted_active_k)} active contingencies (Filtered Top-{TOP_K}).")
 
     # =========================================================
-    # 2. WARM-STARTED CCGA EXECUTION
+    # 3. WARM-STARTED CCGA EXECUTION
     # =========================================================
-    # Pass the predicted active contingencies directly into the CCGA solver
+    # Pass the filtered active contingencies directly into the CCGA solver
     pg_ml_pu, status, ccga_iters, final_S = run_ccga_algorithm(
         case['bus'], case['gen'], case['branch'], case['gencost'], 
         load_vector, PTDF_matrix, 
