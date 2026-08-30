@@ -97,11 +97,11 @@ def evaluate_benchmarks():
 
     print("Loading Trained Erdős-GNN Agents...")
     gnn_z1 = Zone_ADMM_GNN(num_boundaries, num_global_kg).to(device)
-    gnn_z1.load_state_dict(torch.load(f"data/admm_models/zone1_gnn_agent_{case_name}.pth", map_location=device, weights_only=False))
+    gnn_z1.load_state_dict(torch.load(f"data/ccga_models/zone1_gnn_oracle_{case_name}.pth", map_location=device, weights_only=False))
     gnn_z1.eval()
 
     gnn_z2 = Zone_ADMM_GNN(num_boundaries, num_global_kg).to(device)
-    gnn_z2.load_state_dict(torch.load(f"data/admm_models/zone2_gnn_agent_{case_name}.pth", map_location=device, weights_only=False))
+    gnn_z2.load_state_dict(torch.load(f"data/ccga_models/zone2_gnn_oracle_{case_name}.pth", map_location=device, weights_only=False))
     gnn_z2.eval()
 
     csv_path = f'data/{case_name}_generated_loads.csv'

@@ -10,6 +10,33 @@ from dcopf_model import build_ptdf, run_ccga_algorithm
 from gnn_erdos import Zone_ADMM_GNN, create_zonal_data
 from ml_oracle import predict_active_contingencies
 
+def run_ml_ccga_scenario(case, zonal_data, load_vector, PTDF_matrix, gnn_z1, gnn_z2, device, baseMVA=100.0, verbose=False):
+    """
+    Modular function to run a single scenario through the ML-Oracle and CCGA.
+    Returns the per-unit dispatch, total time, iterations, and predicted set.
+    """
+    start_time = time.time()
+    
+    # 1. Instant ML Inference
+    predicted_active = predict_active_contingencies(case, load_vector, gnn_z1, gnn_z2, device)
+    
+    if verbose:
+        print(f"ML Oracle predicted active set: {predicted_active}")
+        
+    # 2. Exact CCGA Solver
+    optimal_g, status, ccga_iters, final_active_S = run_ccga_algorithm(
+        case['bus'], case['gen'], case['branch'], case['gencost'], 
+        load_vector, PTDF_matrix,
+        initial_active_S=predicted_active
+    )
+    
+    solve_time = time.time() - start_time
+    
+    # Convert MW dispatch back to per-unit (PU) for cost calculations
+    pg_ml_pu = {k: v / baseMVA for k, v in optimal_g.items()}
+    
+    return pg_ml_pu, solve_time, ccga_iters, predicted_active
+
 def main():
     parser = argparse.ArgumentParser(description="Run Erdős-GNN Accelerated CCGA")
     parser.add_argument('--case', type=str, required=True, help="e.g., pglib_opf_case118_ieee")
