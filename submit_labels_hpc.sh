@@ -17,15 +17,19 @@
 #SBATCH --array=0-9
 
 # =========================================================
-# 1. ARGUMENT PARSING
+# 1. ARGUMENT PARSING (Supports both --case name and plain name)
 # =========================================================
-# Grab the first argument passed to sbatch
-CASE_NAME=$1
+while [[ "$#" -gt 0 ]]; do
+    case $1 in
+        --case) CASE_NAME="$2"; shift ;;
+        *) CASE_NAME="$1" ;;
+    esac
+    shift
+done
 
-# Safety check: ensure a case name was provided
 if [ -z "$CASE_NAME" ]; then
     echo "ERROR: You must provide a case name."
-    echo "Usage: sbatch submit_labels_hpc.sh <case_name>"
+    echo "Usage: sbatch submit_labels_hpc.sh --case <case_name>  OR  sbatch submit_labels_hpc.sh <case_name>"
     exit 1
 fi
 
