@@ -293,7 +293,7 @@ def build_and_solve_ccga_master(bus_df, gen_df, branch_df, cost_df, load_vector,
     model.ref_bus_cont_eq = pyo.Constraint(model.Active_S, rule=ref_bus_cont_rule)
 
     # --- SOLVE ---
-    solver = pyo.SolverFactory('gurobi')
+    solver = pyo.SolverFactory('gurobi_direct')
     results = solver.solve(model, tee=False)
     
     # Failsafe: Should never hit due to slacks, but protects the loop if Gurobi license drops, etc.
