@@ -16,9 +16,27 @@
 # 1000 total scenarios / 100 scenarios per task = 10 tasks
 #SBATCH --array=0-9
 
+# =========================================================
+# 1. ARGUMENT PARSING
+# =========================================================
+# Grab the first argument passed to sbatch
+CASE_NAME=$1
+
+# Safety check: ensure a case name was provided
+if [ -z "$CASE_NAME" ]; then
+    echo "ERROR: You must provide a case name."
+    echo "Usage: sbatch submit_labels_hpc.sh <case_name>"
+    exit 1
+fi
+
+echo "Running Ground-Truth Generation for case: $CASE_NAME"
+
 # Ensure the output directory exists
 mkdir -p data/labels
 
+# =========================================================
+# 2. ARRAY MATH
+# =========================================================
 # 1000 total scenarios divided into 10 chunks of 100
 CHUNK_SIZE=100
 START_IDX=$(( SLURM_ARRAY_TASK_ID * CHUNK_SIZE ))
@@ -30,7 +48,6 @@ echo "Processing scenarios $START_IDX to $END_IDX"
 # =========================================================
 # 3. ENVIRONMENT
 # =========================================================
-
 # Load HPC Gurobi configuration
 module purge
 module load gurobi/13.0.1
@@ -38,12 +55,6 @@ module load gurobi/13.0.1
 # Initialize Conda
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate pytorch
-
-echo "Python: $(which python)"
-python --version
-
-echo "GRB_LICENSE_FILE: $GRB_LICENSE_FILE"
-echo "GUROBI_HOME: $GUROBI_HOME"
 
 # Verify Gurobi before starting experiments
 python -c "
@@ -57,11 +68,8 @@ print('Gurobi license: OK')
 }
 
 echo "============================================"
-echo "Environment"
+echo "Environment Ready"
 echo "============================================"
-echo "Conda environment: $CONDA_DEFAULT_ENV"
-echo "Python: $(which python)"
-echo "GRB_LICENSE_FILE: $GRB_LICENSE_FILE"
-echo "GUROBI_HOME: $GUROBI_HOME"
 
-python generate_ground_truth.py --case pglib_opf_case118_ieee --start_idx $START_IDX --end_idx $END_IDX
+# Pass the dynamic variable to your python script
+python generate_ground_truth.py --case $CASE_NAME --start_idx $START_IDX --end_idx $END_IDX
