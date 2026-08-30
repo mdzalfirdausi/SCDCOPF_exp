@@ -3,14 +3,17 @@
 #SBATCH --job-name=scdcopf
 #SBATCH --partition=cpu_x440
 #SBATCH --exclude=node0032
-#SBATCH --output=/dev/null
-#SBATCH --error=/dev/null
+
+# SAVE YOUR LOGS! This writes them to your data/labels folder
+#SBATCH --output=data/labels/log_%A_%a.out
+#SBATCH --error=data/labels/log_%A_%a.err
 
 #SBATCH --time=2-00:00:00
 
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=2G
 
+# 1000 total scenarios / 100 scenarios per task = 10 tasks
 #SBATCH --array=0-9
 
 # Ensure the output directory exists

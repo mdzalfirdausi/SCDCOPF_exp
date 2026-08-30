@@ -1,7 +1,6 @@
 #!/bin/bash
 
 #SBATCH --job-name=erdos_train
-#SBATCH --partition=main
 
 # Disable default slurm logs to use our custom exec routing
 #SBATCH --output=/dev/null
@@ -11,8 +10,14 @@
 #SBATCH --time=4:00:00
 
 # PyTorch Geometric trains faster with a few extra CPU cores for data loading
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=16G
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=64
+#SBATCH --mem=160G
+#SBATCH --partition=gpu_x450
+#SBATCH --gres=gpu:1
+#SBATCH --exclude=gpu0002
+##SBATCH --nodelist=gpu0003,gpu0004
 
 # =========================================================
 # 0. CUSTOM LOG ROUTING (erdos_ prefix)
