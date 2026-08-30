@@ -9,7 +9,7 @@
 #SBATCH --time=04:00:00
 
 #SBATCH --cpus-per-task=1
-#SBATCH --mem=4G
+#SBATCH --mem=8G
 
 # 1000 total scenarios / 10 scenarios per task = 100 tasks
 #SBATCH --array=0-99
@@ -17,7 +17,7 @@
 # =========================================================
 # 0. LOG REDIRECTION
 # =========================================================
-LOG_DIR="logs/${SLURM_ARRAY_JOB_ID}"
+LOG_DIR="logs/ccga_${SLURM_ARRAY_JOB_ID}"
 mkdir -p "$LOG_DIR"
 
 exec > "${LOG_DIR}/ccga_${SLURM_ARRAY_TASK_ID}.out" \
