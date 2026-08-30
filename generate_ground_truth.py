@@ -17,11 +17,17 @@ def generate_labels():
     case_name = args.case
     baseMVA = 100.0
 
+    # 1. Load CSV First to fix the "None" print issue
+    csv_path = f'data/{case_name}_generated_loads.csv'
+    load_profiles = pd.read_csv(csv_path)
+    
+    start = args.start_idx
+    end = args.end_idx if args.end_idx is not None else len(load_profiles)
+
     print(f"=======================================================")
-    print(f" GENERATING LABELS (Scenarios {args.start_idx} to {args.end_idx}) ")
+    print(f" GENERATING LABELS (Scenarios {start} to {end}) ")
     print(f"=======================================================")
 
-    # 1. Load Data
     case_path = f'../excel_outputs/{case_name}.xlsx'
     case = pd.read_excel(case_path, sheet_name=['baseMVA','bus','gen','gencost','branch'])
     baseMVA = case['baseMVA']['baseMVA'][0]
@@ -42,11 +48,6 @@ def generate_labels():
     PTDF_matrix, _ = build_ptdf(case['bus'], case['branch'], ref_bus)
 
     # 2. Slice the Dataset based on arguments
-    csv_path = f'data/{case_name}_generated_loads.csv'
-    load_profiles = pd.read_csv(csv_path)
-    
-    start = args.start_idx
-    end = args.end_idx if args.end_idx is not None else len(load_profiles)
     load_profiles = load_profiles.iloc[start:end]
 
     os.makedirs('data/labels', exist_ok=True)
@@ -54,13 +55,22 @@ def generate_labels():
 
     print(f"Starting exact CCGA solver for {len(load_profiles)} scenarios...")
     
+    # --- 3. WARM START INITIALIZATION ---
+    warm_start_active_set = []
+    
     for idx, (original_s, row) in enumerate(load_profiles.iterrows()):
         start_time = time.time()
         load_vector = {b: row[f"Bus_{b}_Pd"] for b in bus_list}
         
+        # --- 4. PASS WARM START TO SOLVER ---
         _, _, ccga_iters, active_S = run_ccga_algorithm(
-            case['bus'], case['gen'], case['branch'], case['gencost'], load_vector, PTDF_matrix
+            case['bus'], case['gen'], case['branch'], case['gencost'], 
+            load_vector, PTDF_matrix,
+            initial_active_S=warm_start_active_set
         )
+        
+        # --- 5. UPDATE WARM START FOR NEXT SCENARIO ---
+        warm_start_active_set = active_S.copy()
         
         row_dict = {'Scenario_ID': original_s}
         for k in global_kg:
@@ -70,7 +80,7 @@ def generate_labels():
         solve_time = time.time() - start_time
         print(f" -> Solved Scenario {original_s} | True Active Set: {active_S} | Time: {solve_time:.2f}s")
 
-    # 3. Save this specific chunk
+    # 6. Save this specific chunk
     df_chunk = pd.DataFrame(chunk_data)
     chunk_filename = f"data/labels/{case_name}_labels_{start}_to_{end}.csv"
     df_chunk.to_csv(chunk_filename, index=False)
