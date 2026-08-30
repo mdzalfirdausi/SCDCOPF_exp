@@ -11,7 +11,7 @@ import pandas as pd
 from torch_geometric.data import Data
 
 # Import your custom physical solver
-from dcopf_model import build_ptdf, run_ccga_algorithm
+from dcopf_model2 import build_ptdf, run_ccga_algorithm
 
 def generate_ccga_dataset(bus_df, gen_df, branch_df, cost_df, loads_df, PTDF_matrix, start_idx, output_dir):
     os.makedirs(output_dir, exist_ok=True)

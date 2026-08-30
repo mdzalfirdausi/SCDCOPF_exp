@@ -6,7 +6,7 @@ import pandas as pd
 import numpy as np
 
 # Import your models and oracle
-from dcopf_model import build_ptdf, run_ccga_algorithm
+from dcopf_model2 import build_ptdf, run_ccga_algorithm
 from gnn_erdos import Zone_ADMM_GNN, create_zonal_data
 from ml_oracle import predict_active_contingencies
 

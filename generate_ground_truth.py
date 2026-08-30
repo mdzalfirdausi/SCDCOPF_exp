@@ -4,7 +4,7 @@ import argparse
 import pandas as pd
 import numpy as np
 
-from dcopf_model import build_ptdf, run_ccga_algorithm
+from dcopf_model2 import build_ptdf, run_ccga_algorithm
 from gnn_erdos import create_zonal_data
 
 def generate_labels():

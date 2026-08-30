@@ -119,7 +119,7 @@ def evaluate_benchmarks():
         # BASELINE: EXACT CCGA
         # =========================================================
         start_ccga = time.time()
-        opt_g_baseline, status, ccga_iters, active_S = run_ccga_algorithm(
+        opt_g_baseline, status, ccga_iters, active_Kg, active_Ke = run_ccga_algorithm(
             case['bus'], case['gen'], case['branch'], case['gencost'], load_vector, PTDF_matrix
         )
         time_ccga = time.time() - start_ccga
