@@ -6,13 +6,13 @@
 #SBATCH --output=/dev/null
 #SBATCH --error=/dev/null
 
-#SBATCH --time=2-00:00:00
+#SBATCH --time=04:00:00
 
 #SBATCH --cpus-per-task=1
-#SBATCH --mem=2G
+#SBATCH --mem=4G
 
-# 1000 total scenarios / 100 scenarios per task = 10 tasks
-#SBATCH --array=0-9
+# 1000 total scenarios / 10 scenarios per task = 100 tasks
+#SBATCH --array=0-99
 
 # =========================================================
 # 0. LOG REDIRECTION
@@ -47,17 +47,16 @@ done
 
 if [[ -z "$CASE_NAME" ]]; then
     echo "ERROR: You must provide a case name."
-    echo "Usage: sbatch submit_labels_hpc.sh --case <case_name>  OR  sbatch submit_labels_hpc.sh <case_name>"
+    echo "Usage: sbatch submit_labels_hpc.sh --case <case_name>"
     exit 1
 fi
 
-# Ensure data directory exists
 mkdir -p data/labels
 
 # =========================================================
-# 2. ARRAY MATH & JOB INFO
+# 2. ARRAY MATH & JOB INFO (100 tasks * 10 scenarios)
 # =========================================================
-CHUNK_SIZE=100
+CHUNK_SIZE=10
 START_IDX=$(( SLURM_ARRAY_TASK_ID * CHUNK_SIZE ))
 END_IDX=$(( START_IDX + CHUNK_SIZE ))
 
@@ -81,7 +80,6 @@ module load gurobi/13.0.1
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate pytorch
 
-# Thread limits to prevent CPU oversubscription
 export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 export MKL_NUM_THREADS=$SLURM_CPUS_PER_TASK
 export OPENBLAS_NUM_THREADS=$SLURM_CPUS_PER_TASK
@@ -96,10 +94,6 @@ print('Gurobi license: OK')
     echo "ERROR: Gurobi license check failed."
     exit 1
 }
-
-echo "============================================"
-echo "Environment: Conda ($CONDA_DEFAULT_ENV) | Python ($(which python))"
-echo "============================================"
 
 # =========================================================
 # 4. RUN
