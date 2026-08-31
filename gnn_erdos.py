@@ -165,7 +165,7 @@ def compute_zonal_erdos_loss(Pg_base, Va_local, zk_local, ek_local, Pd_batch,
                              Va_target, u_va, zk_target, u_zk, ek_target, u_ek,
                              c2, c1, c0, rho_ADMM=1000.0, lambda_bal=1e5, beta_erdos=50.0):
     
-    gen_cost = torch.sum(c2 * (Pg_base ** 2) + c1 * Pg_base + c0, dim=1)
+    gen_cost = torch.sum(c1 * Pg_base + c0, dim=1)
     
     total_gen = torch.sum(Pg_base, dim=1)
     total_load = torch.sum(Pd_batch, dim=1)

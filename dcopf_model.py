@@ -237,11 +237,15 @@ def build_and_solve_ccga_master(bus_df, gen_df, branch_df, cost_df, load_vector,
 
     # --- OBJECTIVE FUNCTION ---
     def obj_rule(m):
-        penalty = 1e5 
-        gen_cost = sum(c2[i] * ((m.Pg[i] * baseMVA)**2) + c1[i] * (m.Pg[i] * baseMVA) for i in m.Gens)
+        penalty = 1500.0  # From the 2025 paper
         
-        slack_cost_nom = penalty * (sum(m.Sl_nom_line[l] for l in m.Branches) + 
-                                    sum(m.Sl_Pg_nom_up[i] + m.Sl_Pg_nom_down[i] for i in m.Gens))
+        gen_cost = sum(c1[i] * (m.Pg[i] * baseMVA) for i in m.Gens)
+        
+        slack_cost_nom = penalty * (
+            sum(m.Sl_nom_line[l] for l in m.Branches) + 
+            sum(m.Sl_Pg_nom_up[i] + m.Sl_Pg_nom_down[i] for i in m.Gens)
+        )
+        
         slack_cost_prov = penalty * sum(m.Sl_Pg_prov_up[s, i] + m.Sl_Pg_prov_down[s, i] for s in m.All_Contingencies for i in m.Gens)
         
         slack_cost_cont_g = penalty * sum(m.Sl_cont_line_g[s, l] for s in m.Active_Kg for l in m.Branches) if len(active_Kg) > 0 else 0.0
