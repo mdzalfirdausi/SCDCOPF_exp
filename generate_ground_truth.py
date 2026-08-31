@@ -17,8 +17,12 @@ def generate_labels():
     case_name = args.case
     baseMVA = 100.0
 
-    # 1. Load CSV First to fix the "None" print issue
-    csv_path = f'data/{case_name}_generated_loads.csv'
+    # 1. Load CSV First
+    csv_path = f'data/{case_name}_generated_data.csv' # Changed to _data to reflect comprehensive features
+    if not os.path.exists(csv_path):
+        # Fallback if you are testing with the old loads-only file
+        csv_path = f'data/{case_name}_generated_loads.csv'
+        
     load_profiles = pd.read_csv(csv_path)
     
     start = args.start_idx
@@ -31,6 +35,12 @@ def generate_labels():
     case_path = f'../excel_outputs/{case_name}.xlsx'
     case = pd.read_excel(case_path, sheet_name=['baseMVA','bus','gen','gencost','branch'])
     baseMVA = case['baseMVA']['baseMVA'][0]
+    
+    # Cast to float to prevent Pandas LossySetitemError during injection
+    case['gen']['Pmax'] = case['gen']['Pmax'].astype(float)
+    case['gencost']['c1'] = case['gencost']['c1'].astype(float)
+    case['gencost']['c2'] = case['gencost']['c2'].astype(float)
+    
     case['gamma'], case['M_eta'] = 1, 1500
     case['gen'].attrs['gamma'] = case['gamma'] 
     
@@ -40,8 +50,12 @@ def generate_labels():
 
     total_buses = case['bus']['bus_i'].tolist()
     midpoint = len(total_buses) // 2
+    
+    # Extract both Generator and Line Contingency Sets
     zonal_data = create_zonal_data(case, total_buses[:midpoint], total_buses[midpoint:])
     global_kg = zonal_data['global_Kg']
+    global_ke = zonal_data['global_Ke']
+    
     bus_list = sorted(case['bus']['bus_i'].tolist())
     ref_bus = int(case['bus'].loc[case['bus']['type'] == 3, 'bus_i'].values[0])
 
@@ -55,32 +69,50 @@ def generate_labels():
 
     print(f"Starting exact CCGA solver for {len(load_profiles)} scenarios...")
     
-    # --- 3. WARM START INITIALIZATION ---
-    warm_start_active_set = []
+    # --- 3. DUAL WARM START INITIALIZATION ---
+    warm_start_active_kg = []
+    warm_start_active_ke = []
     
     for idx, (original_s, row) in enumerate(load_profiles.iterrows()):
         start_time = time.time()
+        
+        # Extract Perturbed Loads
         load_vector = {b: row[f"Bus_{b}_Pd"] for b in bus_list}
         
-        # --- 4. PASS WARM START TO SOLVER ---
-        _, _, ccga_iters, active_S = run_ccga_algorithm(
+        # Inject Perturbed Limits and Costs (if present in CSV)
+        if f"Gen_{global_kg[0]}_Pmax" in row:
+            for gen_id in global_kg:
+                case['gen'].loc[case['gen']['gen_ID'] == gen_id, 'Pmax'] = row[f"Gen_{gen_id}_Pmax"]
+                case['gencost'].loc[case['gencost']['gen_ID'] == gen_id, 'c1'] = row[f"Gen_{gen_id}_c1"]
+                case['gencost'].loc[case['gencost']['gen_ID'] == gen_id, 'c2'] = row[f"Gen_{gen_id}_c2"]
+        
+        # --- 4. PASS WARM STARTS TO SOLVER ---
+        # Unpack all 5 returns from the updated dcopf_model
+        _, _, ccga_iters, active_Kg, active_Ke = run_ccga_algorithm(
             case['bus'], case['gen'], case['branch'], case['gencost'], 
             load_vector, PTDF_matrix,
-            initial_active_S=warm_start_active_set
+            initial_active_Kg=warm_start_active_kg,
+            initial_active_Ke=warm_start_active_ke
         )
         
-        # --- 5. UPDATE WARM START FOR NEXT SCENARIO ---
-        warm_start_active_set = active_S.copy()
+        # --- 5. UPDATE WARM STARTS FOR NEXT SCENARIO ---
+        warm_start_active_kg = active_Kg.copy()
+        warm_start_active_ke = active_Ke.copy()
         
+        # --- 6. RECORD TARGET LABELS ---
         row_dict = {'Scenario_ID': original_s}
+        
         for k in global_kg:
-            row_dict[f'Gen_{k}_Active'] = 1 if k in active_S else 0
+            row_dict[f'Gen_{k}_Active'] = 1 if k in active_Kg else 0
+            
+        for e in global_ke:
+            row_dict[f'Line_{e}_Active'] = 1 if e in active_Ke else 0
             
         chunk_data.append(row_dict)
         solve_time = time.time() - start_time
-        print(f" -> Solved Scenario {original_s} | True Active Set: {active_S} | Time: {solve_time:.2f}s")
+        print(f" -> Solved Scenario {original_s} | Active Kg: {len(active_Kg)} | Active Ke: {len(active_Ke)} | Time: {solve_time:.2f}s")
 
-    # 6. Save this specific chunk
+    # 7. Save this specific chunk
     df_chunk = pd.DataFrame(chunk_data)
     chunk_filename = f"data/labels/{case_name}_labels_{start}_to_{end}.csv"
     df_chunk.to_csv(chunk_filename, index=False)
