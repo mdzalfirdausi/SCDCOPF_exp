@@ -14,7 +14,7 @@ import pyomo.environ as pyo
 import matplotlib.pyplot as plt
 
 # Import baseline functions and the standardized ML-ADMM runner
-from dcopf_model2 import build_ptdf, run_ccga_algorithm, check_contingency_violations, calculate_primary_response
+from dcopf_model import build_ptdf, run_ccga_algorithm, check_contingency_violations, calculate_primary_response
 from gnn_erdos import Zone_ADMM_GNN, create_zonal_data
 from run_ml_ccga import run_ml_ccga_scenario
 # from run_ml_admm import run_ml_admm_scenario

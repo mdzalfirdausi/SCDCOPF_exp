@@ -2,7 +2,7 @@ import pandas as pd
 import os
 import sys
 import argparse
-from dcopf_model2 import build_ptdf, run_ccga_algorithm
+from dcopf_model import build_ptdf, run_ccga_algorithm
 
 def main():
     # 1. Set up argparse to accept the --case flag
