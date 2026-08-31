@@ -12,8 +12,8 @@ from sklearn.model_selection import train_test_split
 # Import your GNN architectures and data builders
 from gnn_erdos import Zone_ADMM_GNN, create_zonal_data, create_pyg_dataset
 
-def train_agent(agent_name, model, train_loader, val_loader, device, num_global_kg, num_boundaries, epochs=50, lr=1e-3):
-    """Standard Supervised Training Loop with BCE Loss"""
+def train_agent(agent_name, model, train_loader, val_loader, device, num_global_kg, num_global_ke, num_boundaries, epochs=50, lr=1e-3):
+    """Standard Supervised Training Loop with Combined BCE Loss for Kg and Ke"""
     print(f"\n=======================================================")
     print(f" TRAINING: {agent_name.upper()}")
     print(f"=======================================================")
@@ -31,15 +31,19 @@ def train_agent(agent_name, model, train_loader, val_loader, device, num_global_
             batch = batch.to(device)
             optimizer.zero_grad()
             
-            # Dummy tensors for ADMM communication variables (not used in one-shot inference)
+            # Dummy tensors for ADMM communication variables (not used in one-shot supervised inference)
             va_dummy = torch.zeros(batch.num_graphs, num_global_kg + 1, num_boundaries, device=device)
             zk_dummy = torch.zeros(batch.num_graphs, num_global_kg, device=device)
+            ek_dummy = torch.zeros(batch.num_graphs, num_global_ke, device=device)
             
-            _, _, zk_prob = model(batch, va_dummy, va_dummy, zk_dummy, zk_dummy)
+            # GNN Output: Pg_base, Va_local, zk_prob, ek_prob
+            _, _, zk_prob, ek_prob = model(batch, va_dummy, va_dummy, zk_dummy, zk_dummy, ek_dummy, ek_dummy)
             
-            # zk_prob shape: (batch, num_global_kg, 1) -> squeeze(-1) makes it (batch, num_global_kg)
-            # batch.y shape: (batch, num_global_kg)
-            loss = criterion(zk_prob.squeeze(-1), batch.y.float())
+            # Calculate combined loss for Generators and Lines
+            loss_k = criterion(zk_prob.squeeze(-1), batch.y_k.float())
+            loss_e = criterion(ek_prob.squeeze(-1), batch.y_e.float())
+            loss = loss_k + loss_e
+            
             loss.backward()
             optimizer.step()
             
@@ -50,7 +54,7 @@ def train_agent(agent_name, model, train_loader, val_loader, device, num_global_
         # --- VALIDATION ---
         model.eval()
         val_loss = 0.0
-        correct, total_elements = 0, 0
+        correct_k, correct_e, total_k, total_e = 0, 0, 0, 0
         
         with torch.no_grad():
             for batch in val_loader:
@@ -58,22 +62,30 @@ def train_agent(agent_name, model, train_loader, val_loader, device, num_global_
                 
                 va_dummy = torch.zeros(batch.num_graphs, num_global_kg + 1, num_boundaries, device=device)
                 zk_dummy = torch.zeros(batch.num_graphs, num_global_kg, device=device)
+                ek_dummy = torch.zeros(batch.num_graphs, num_global_ke, device=device)
                 
-                _, _, zk_prob = model(batch, va_dummy, va_dummy, zk_dummy, zk_dummy)
+                _, _, zk_prob, ek_prob = model(batch, va_dummy, va_dummy, zk_dummy, zk_dummy, ek_dummy, ek_dummy)
                 
-                loss = criterion(zk_prob.squeeze(-1), batch.y.float())
-                val_loss += loss.item() * batch.num_graphs
+                loss_k = criterion(zk_prob.squeeze(-1), batch.y_k.float())
+                loss_e = criterion(ek_prob.squeeze(-1), batch.y_e.float())
+                val_loss += (loss_k.item() + loss_e.item()) * batch.num_graphs
                 
                 # Calculate accuracy (Threshold = 0.5)
-                preds = (zk_prob.squeeze(-1) > 0.5).float()
-                correct += (preds == batch.y).sum().item()
-                total_elements += batch.y.numel()
+                preds_k = (zk_prob.squeeze(-1) > 0.5).float()
+                preds_e = (ek_prob.squeeze(-1) > 0.5).float()
+                
+                correct_k += (preds_k == batch.y_k).sum().item()
+                correct_e += (preds_e == batch.y_e).sum().item()
+                
+                total_k += batch.y_k.numel()
+                total_e += batch.y_e.numel()
                 
         avg_val_loss = val_loss / len(val_loader.dataset)
-        val_acc = (correct / total_elements) * 100.0
+        acc_k = (correct_k / total_k) * 100.0 if total_k > 0 else 0.0
+        acc_e = (correct_e / total_e) * 100.0 if total_e > 0 else 0.0
         
         if (epoch + 1) % 10 == 0 or epoch == 0:
-            print(f"Epoch [{epoch+1}/{epochs}] | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f} | Val Acc: {val_acc:.2f}%")
+            print(f"Epoch [{epoch+1}/{epochs}] | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f} | Acc Kg: {acc_k:.2f}% | Acc Ke: {acc_e:.2f}%")
             
     return model
 
@@ -88,7 +100,7 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
 
-    # 1. LOAD EXCEL GRID DATA (Clean zero-capacity generators)
+    # 1. LOAD EXCEL GRID DATA
     case_path = f'../excel_outputs/{args.case}.xlsx'
     case = pd.read_excel(case_path, sheet_name=['baseMVA','bus','gen','gencost','branch'])
     baseMVA = case['baseMVA']['baseMVA'][0]
@@ -102,37 +114,49 @@ def main():
     
     zonal_data = create_zonal_data(case, zone1_buses, zone2_buses)
     global_kg = zonal_data['global_Kg']
+    global_ke = zonal_data['global_Ke']
     boundary_buses = sorted(list(zonal_data['boundary_buses']))
-    num_boundaries, num_global_kg = len(boundary_buses), len(global_kg)
+    
+    num_boundaries = len(boundary_buses)
+    num_global_kg = len(global_kg)
+    num_global_ke = len(global_ke)
     bus_list = sorted(case['bus']['bus_i'].tolist())
 
     # 2. LOAD FEATURES (Generated Loads) AND LABELS (Master CSV)
-    loads_df = pd.read_csv(f'data/{args.case}_generated_loads.csv')
+    data_path = f'data/{args.case}_generated_data.csv'
+    if not os.path.exists(data_path):
+        data_path = f'data/{args.case}_generated_loads.csv'
+        
+    loads_df = pd.read_csv(data_path)
     labels_df = pd.read_csv(f'data/labels/{args.case}_master_labels.csv')
     
-    # Ensure they match in length
     num_instances = min(len(loads_df), len(labels_df))
-    label_cols = [f"Gen_{k}_Active" for k in global_kg]
+    label_cols_k = [f"Gen_{k}_Active" for k in global_kg]
+    label_cols_e = [f"Line_{e}_Active" for e in global_ke]
 
     dataset_z1, dataset_z2 = [], []
 
     print("Building PyTorch Geometric Datasets...")
     for s in range(num_instances):
-        # Extract features (Loads in PU)
-        scenario_row_pu = np.array([loads_df.iloc[s][f"Bus_{b}_Pd"] for b in bus_list]) / baseMVA
+        # Extract features
+        row = loads_df.iloc[s]
+        scenario_row_pu = np.array([row[f"Bus_{b}_Pd"] for b in bus_list]) / baseMVA
         load_z1 = scenario_row_pu[:len(zone1_buses)].reshape(1, -1)
         load_z2 = scenario_row_pu[len(zone1_buses):].reshape(1, -1)
         
-        # FIXED: Extract target labels and unsqueeze so shape is [1, num_global_kg]
-        y_vector = torch.tensor(labels_df.iloc[s][label_cols].values.astype(np.float32)).unsqueeze(0)
+        # Extract target labels for BOTH generators and lines
+        y_vector_k = torch.tensor(labels_df.iloc[s][label_cols_k].values.astype(np.float32)).unsqueeze(0)
+        y_vector_e = torch.tensor(labels_df.iloc[s][label_cols_e].values.astype(np.float32)).unsqueeze(0)
 
-        # Create graphs and attach target tensor 'y'
+        # Create graphs and attach target tensors
         graph_z1 = create_pyg_dataset(zonal_data['zone1'], load_z1, baseMVA)[0]
-        graph_z1.y = y_vector
+        graph_z1.y_k = y_vector_k
+        graph_z1.y_e = y_vector_e
         dataset_z1.append(graph_z1)
 
         graph_z2 = create_pyg_dataset(zonal_data['zone2'], load_z2, baseMVA)[0]
-        graph_z2.y = y_vector
+        graph_z2.y_k = y_vector_k
+        graph_z2.y_e = y_vector_e
         dataset_z2.append(graph_z2)
 
     # 3. SPLIT DATA INTO TRAIN/VAL SETS (80/20)
@@ -146,16 +170,15 @@ def main():
     loader_z2_val = DataLoader(z2_val, batch_size=args.batch_size, shuffle=False)
 
     # 4. INITIALIZE MODELS
-    gnn_z1 = Zone_ADMM_GNN(num_boundaries, num_global_kg)
-    gnn_z2 = Zone_ADMM_GNN(num_boundaries, num_global_kg)
+    gnn_z1 = Zone_ADMM_GNN(num_boundaries, num_global_kg, num_global_ke)
+    gnn_z2 = Zone_ADMM_GNN(num_boundaries, num_global_kg, num_global_ke)
 
     # 5. TRAIN BOTH AGENTS
     print(f"Starting Supervised Training on {num_instances} scenarios...")
-    gnn_z1 = train_agent("Zone 1 GNN", gnn_z1, loader_z1_train, loader_z1_val, device, num_global_kg, num_boundaries, args.epochs, args.lr)
-    gnn_z2 = train_agent("Zone 2 GNN", gnn_z2, loader_z2_train, loader_z2_val, device, num_global_kg, num_boundaries, args.epochs, args.lr)
+    gnn_z1 = train_agent("Zone 1 GNN", gnn_z1, loader_z1_train, loader_z1_val, device, num_global_kg, num_global_ke, num_boundaries, args.epochs, args.lr)
+    gnn_z2 = train_agent("Zone 2 GNN", gnn_z2, loader_z2_train, loader_z2_val, device, num_global_kg, num_global_ke, num_boundaries, args.epochs, args.lr)
 
     # 6. SAVE WEIGHTS
-    # Change the folder name to reflect the new architecture
     os.makedirs('data/ccga_models', exist_ok=True)
     
     save_z1 = f"data/ccga_models/zone1_gnn_oracle_{args.case}.pth"
