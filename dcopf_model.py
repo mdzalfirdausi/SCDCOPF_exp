@@ -121,7 +121,7 @@ def check_contingency_violations(g_s, PTDF_matrix, load_vector, branch_df, bus_g
             violation = abs(flow) - limit
             if violation > max_violation:
                 max_violation = violation
-                worst_line_idx = branch_df.iloc[l]['line_ID']
+                worst_line_idx = int(branch_df.iloc[l]['line_ID']) # Cast to int
                 
     return max_violation, worst_line_idx
 
@@ -161,8 +161,8 @@ def check_line_violations(optimal_g, PTDF_matrix, LODF_matrix, load_vector, bran
                 violation = abs(post_flows[l]) - limit
                 if violation > max_violation:
                     max_violation = violation
-                    worst_outaged_line = outaged_line_id
-                    worst_violated_line = branch_df.iloc[l]['line_ID']
+                    worst_outaged_line = int(outaged_line_id) # Cast to int
+                    worst_violated_line = int(branch_df.iloc[l]['line_ID']) # Cast to int
                     
     return max_violation, worst_outaged_line, worst_violated_line
 
@@ -306,7 +306,7 @@ def build_and_solve_ccga_master(bus_df, gen_df, branch_df, cost_df, load_vector,
         model.ref_bus_cont_e_eq = pyo.Constraint(model.Active_Ke, rule=lambda m, e: m.Thetas_e[e, ref_bus_id] == 0)
 
     # --- SOLVE ---
-    solver = pyo.SolverFactory('gurobi_direct')
+    solver = pyo.SolverFactory('gurobi')
     results = solver.solve(model, tee=False)
     
     if results.solver.termination_condition in [TerminationCondition.infeasible, TerminationCondition.infeasibleOrUnbounded]:
