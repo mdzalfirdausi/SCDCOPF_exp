@@ -12,7 +12,7 @@ def merge_chunks():
     case_name = args.case
     
     # 1. Grab all chunk files from the labels directory for the specific case
-    file_pattern = f"data/labels/{case_name}_labels_chunk_*.csv"
+    file_pattern = f"data/labels/ccga_{case_name}/ccga_{case_name}_labels_*.csv"
     chunk_files = glob.glob(file_pattern)
     
     if not chunk_files:
@@ -30,7 +30,7 @@ def merge_chunks():
     master_df = master_df.sort_values(by='Scenario_ID').reset_index(drop=True)
 
     # 4. Save to the final master CSV
-    output_file = f"data/labels/{case_name}_master_labels.csv"
+    output_file = f"data/labels/ccga_{case_name}/{case_name}_master_labels.csv"
     master_df.to_csv(output_file, index=False)
 
     print(f"============================================")

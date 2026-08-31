@@ -64,7 +64,8 @@ def generate_labels():
     # 2. Slice the Dataset based on arguments
     load_profiles = load_profiles.iloc[start:end]
 
-    os.makedirs('data/labels', exist_ok=True)
+    output_dir = f"data/labels/ccga_{case_name}"
+    os.makedirs(output_dir, exist_ok=True)
     chunk_data = []
 
     print(f"Starting exact CCGA solver for {len(load_profiles)} scenarios...")
@@ -114,7 +115,7 @@ def generate_labels():
 
     # 7. Save this specific chunk
     df_chunk = pd.DataFrame(chunk_data)
-    chunk_filename = f"data/labels/{case_name}_labels_{start}_to_{end}.csv"
+    chunk_filename = os.path.join(output_dir, f"ccga_{case_name}_labels_{start}_to_{end}.csv")
     df_chunk.to_csv(chunk_filename, index=False)
     print(f"\n*** Job Complete. Saved: {chunk_filename} ***\n")
 
