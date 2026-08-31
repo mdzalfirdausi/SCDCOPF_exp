@@ -4,7 +4,7 @@ import argparse
 import pandas as pd
 import numpy as np
 import pyomo.environ as pyo
-from pyomo.opt import TerminationCondition
+from pyomo.opt import TerminationCondition 
 
 # =====================================================================
 # 1. BENDERS MASTER PROBLEM
