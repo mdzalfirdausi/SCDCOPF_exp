@@ -107,7 +107,6 @@ export NUMEXPR_NUM_THREADS=$SLURM_CPUS_PER_TASK
 # 5. RUN
 # =========================================================
 
-# Pass ONLY the case name; the python script handles task_id via os.environ automatically
 python generate_ccga_dataset.py --case "$CASE_NAME"
 
 EXIT_CODE=$?
