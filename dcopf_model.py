@@ -381,3 +381,90 @@ def run_ccga_algorithm(bus, gen, branch, gencost, load_vector, PTDF_matrix, init
         iteration += 1
         
     return optimal_g, status, iteration, active_Kg, active_Ke
+
+# ==========================================
+# 5. NETWORK STATISTICS GENERATOR
+# ==========================================
+if __name__ == "__main__":
+    import argparse
+    import os
+    
+    parser = argparse.ArgumentParser(description="Extract Grid Topology and MILP Stats")
+    parser.add_argument('--case', type=str, default="pglib_opf_case300_ieee")
+    args = parser.parse_args()
+    
+    case_name = args.case
+    case_path = f'../excel_outputs/{case_name}.xlsx'
+    
+    if not os.path.exists(case_path):
+        print(f"Error: Could not find {case_path}")
+        exit()
+        
+    print(f"Loading {case_name} to extract network statistics...")
+    case = pd.read_excel(case_path, sheet_name=['baseMVA','bus','gen','branch'])
+    baseMVA = case['baseMVA']['baseMVA'][0]
+    
+    bus_df = case['bus']
+    gen_df = case['gen']
+    branch_df = case['branch']
+    
+    # 1. Topological Stats
+    N = len(bus_df)
+    G = len(gen_df)
+    E = len(branch_df)
+    
+    # Loads (|L|) - buses with nonzero active OR reactive demand
+    L = len(bus_df[
+        (bus_df['Pd'] != 0) | (bus_df['Qd'] != 0)
+    ])
+    # Filter generators for Kg (Drop 0 capacity)
+    zero_gen_idx = [num for num, i in enumerate(gen_df.Pmax.values / baseMVA) 
+                    if (i == 0 and (gen_df.Pmin.values / baseMVA)[num] == 0) or 
+                    (gen_df.Pmin.values / baseMVA)[num] < 0]
+    
+    Kg = G - len(zero_gen_idx)
+    
+    # Build PTDF to check Line Contingencies (Ke)
+    ref_bus_id = bus_df.loc[bus_df['type'] == 3, 'bus_i'].values[0]
+    PTDF_matrix, bus_list = build_ptdf(bus_df, branch_df, ref_bus_id)
+    
+    # Count Ke (Skipping radial lines just like build_lodf)
+    Ke = 0
+    bus_idx = {bus_id: i for i, bus_id in enumerate(bus_list)}
+    for k in range(E):
+        bus_i = bus_idx[branch_df.iloc[k]['bus_i']]
+        bus_j = bus_idx[branch_df.iloc[k]['bus_j']]
+        denom = 1.0 - (PTDF_matrix[k, bus_i] - PTDF_matrix[k, bus_j])
+        if abs(denom) >= 1e-5:  # Not radial
+            Ke += 1
+            
+    # 2. Extensive MILP Complexity Stats (For Table 1)
+    vars_base = N + 3*G + 2*E
+    vars_prov = 3 * Kg * G
+    vars_kg = Kg * (1 + N + 2*E)
+    vars_ke = Ke * (N + 2*E)
+    total_continuous = vars_base + vars_prov + vars_kg + vars_ke
+    
+    total_binary = Kg * G
+    
+    cons_base = 3*E + 2*G + N + 1
+    cons_prov = 2*Kg + 3*Kg*G
+    cons_kg = Kg * (4*G + 3*E + N + 1)
+    cons_ke = Ke * (3*E + N + 1)
+    total_constraints = cons_base + cons_prov + cons_kg + cons_ke
+
+    # 3. Print Results
+    print("\n" + "="*80)
+    print(" TOPOLOGICAL NETWORK STATISTICS (For the Image Table)")
+    print("="*80)
+    print(f"{'Test Case':<15} | {'|N|':<5} | {'|G|':<5} | {'|L|':<5} | {'|E|':<5} | {'|Kg|':<5} | {'|Ke|':<5}")
+    print("-" * 65)
+    print(f"{case_name:<15} | {N:<5} | {G:<5} | {L:<5} | {E:<5} | {Kg:<5} | {Ke:<5}")
+    
+    print("\n" + "="*80)
+    print(" EXTENSIVE SCOPF FORMULATION SIZE (For LaTeX Table 1)")
+    print("="*80)
+    print(f"{'Test Case':<15} | {'Continuous Vars':<18} | {'Binary Vars':<15} | {'Linear Constraints':<18}")
+    print("-" * 75)
+    print(f"{case_name:<15} | {total_continuous:<18,d} | {total_binary:<15,d} | {total_constraints:<18,d}")
+    print("="*80 + "\n")    
