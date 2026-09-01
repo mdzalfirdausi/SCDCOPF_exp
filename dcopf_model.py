@@ -171,7 +171,7 @@ def check_line_violations(optimal_g, PTDF_matrix, LODF_matrix, load_vector, bran
 # 3. THE CCGA EXACT MASTER PROBLEM
 # ==========================================
 
-def build_and_solve_ccga_master(bus_df, gen_df, branch_df, cost_df, load_vector, active_Kg, active_Ke, baseMVA=100.0):
+def build_and_solve_ccga_master(bus_df, gen_df, branch_df, cost_df, load_vector, active_Kg, active_Ke, baseMVA=100.0, time_limit=None, log_file=None):
     """Builds the CCGA Master Problem for both Generator and Line Contingencies."""
     model = pyo.ConcreteModel()
     ref_bus_id = bus_df.loc[bus_df['type'] == 3, 'bus_i'].values[0]
@@ -307,11 +307,21 @@ def build_and_solve_ccga_master(bus_df, gen_df, branch_df, cost_df, load_vector,
 
     # --- SOLVE ---
     solver = pyo.SolverFactory('gurobi')
-    results = solver.solve(model, tee=False)
+    if time_limit:
+        solver.options['TimeLimit'] = time_limit
+        
+    # Pyomo handles log files natively via the solve() method, not solver options!
+    results = solver.solve(model, tee=(log_file is not None), logfile=log_file)
     
     if results.solver.termination_condition in [TerminationCondition.infeasible, TerminationCondition.infeasibleOrUnbounded]:
+        if time_limit: 
+            return {}, TerminationCondition.maxTimeLimit
         raise ValueError(f"Model mathematically infeasible. Check grid data format.")
         
+    # If we hit the time limit, there won't be a solution to load, which is fine for the log test.
+    if time_limit and len(model.Pg) > 0 and pyo.value(model.Pg[model.Gens.first()], exception=False) is None:
+        return {}, TerminationCondition.maxTimeLimit
+
     optimal_g = {i: pyo.value(model.Pg[i]) * baseMVA for i in model.Gens}
     return optimal_g, results.solver.termination_condition
 
@@ -383,11 +393,12 @@ def run_ccga_algorithm(bus, gen, branch, gencost, load_vector, PTDF_matrix, init
     return optimal_g, status, iteration, active_Kg, active_Ke
 
 # ==========================================
-# 5. NETWORK STATISTICS GENERATOR
+# 5. EXTENSIVE SCOPF STATS GENERATOR
 # ==========================================
 if __name__ == "__main__":
     import argparse
     import os
+    import re
     
     parser = argparse.ArgumentParser(description="Extract Grid Topology and MILP Stats")
     parser.add_argument('--case', type=str, default="pglib_opf_case300_ieee")
@@ -401,70 +412,122 @@ if __name__ == "__main__":
         exit()
         
     print(f"Loading {case_name} to extract network statistics...")
-    case = pd.read_excel(case_path, sheet_name=['baseMVA','bus','gen','branch'])
+    case = pd.read_excel(case_path, sheet_name=['baseMVA','bus','gen','branch', 'gencost'])
     baseMVA = case['baseMVA']['baseMVA'][0]
-    
     bus_df = case['bus']
     gen_df = case['gen']
     branch_df = case['branch']
+
+    # # 1. Topological Stats
+    # N = len(bus_df)
+    # G = len(gen_df)
+    # E = len(branch_df)
     
-    # 1. Topological Stats
-    N = len(bus_df)
-    G = len(gen_df)
-    E = len(branch_df)
+    # # Loads (|L|) - Count of buses with active demand > 0
+    # L = len(bus_df[bus_df['Pd'] != 0]) if 'Pd' in bus_df.columns else 0
     
-    # Loads (|L|) - buses with nonzero active OR reactive demand
-    L = len(bus_df[
-        (bus_df['Pd'] != 0) | (bus_df['Qd'] != 0)
-    ])
-    # Filter generators for Kg (Drop 0 capacity)
+    # # Filter generators for Kg (Drop 0 capacity)
+    # zero_gen_idx = [num for num, i in enumerate(gen_df.Pmax.values / baseMVA) 
+    #                 if (i == 0 and (gen_df.Pmin.values / baseMVA)[num] == 0) or 
+    #                 (gen_df.Pmin.values / baseMVA)[num] < 0]
+    
+    # Kg = G - len(zero_gen_idx)
+    
+    # # Build PTDF to check Line Contingencies (Ke)
+    # ref_bus_id = bus_df.loc[bus_df['type'] == 3, 'bus_i'].values[0]
+    # PTDF_matrix, bus_list = build_ptdf(bus_df, branch_df, ref_bus_id)
+    
+    # # Count Ke (Skipping radial lines just like build_lodf)
+    # Ke = 0
+    # bus_idx = {bus_id: i for i, bus_id in enumerate(bus_list)}
+    # for k in range(E):
+    #     bus_i = bus_idx[branch_df.iloc[k]['bus_i']]
+    #     bus_j = bus_idx[branch_df.iloc[k]['bus_j']]
+    #     denom = 1.0 - (PTDF_matrix[k, bus_i] - PTDF_matrix[k, bus_j])
+    #     if abs(denom) >= 1e-5:  # Not radial
+    #         Ke += 1
+            
+    # # 3. Print Results
+    # print("\n" + "="*80)
+    # print(" TOPOLOGICAL NETWORK STATISTICS (For the Image Table)")
+    # print("="*80)
+    # print(f"{'Test Case':<15} | {'|N|':<5} | {'|G|':<5} | {'|L|':<5} | {'|E|':<5} | {'|Kg|':<5} | {'|Ke|':<5}")
+    # print("-" * 65)
+    # print(f"{case_name:<15} | {N:<5} | {G:<5} | {L:<5} | {E:<5} | {Kg:<5} | {Ke:<5}")
+    
+    # Filter active generators for Kg
     zero_gen_idx = [num for num, i in enumerate(gen_df.Pmax.values / baseMVA) 
                     if (i == 0 and (gen_df.Pmin.values / baseMVA)[num] == 0) or 
                     (gen_df.Pmin.values / baseMVA)[num] < 0]
+    active_gen_df = gen_df.drop(index=zero_gen_idx)
     
-    Kg = G - len(zero_gen_idx)
-    
-    # Build PTDF to check Line Contingencies (Ke)
+    # Build PTDF to find active Line Contingencies (Ke)
     ref_bus_id = bus_df.loc[bus_df['type'] == 3, 'bus_i'].values[0]
     PTDF_matrix, bus_list = build_ptdf(bus_df, branch_df, ref_bus_id)
     
-    # Count Ke (Skipping radial lines just like build_lodf)
-    Ke = 0
+    active_Ke_list = []
     bus_idx = {bus_id: i for i, bus_id in enumerate(bus_list)}
-    for k in range(E):
+    for k in range(len(branch_df)):
         bus_i = bus_idx[branch_df.iloc[k]['bus_i']]
         bus_j = bus_idx[branch_df.iloc[k]['bus_j']]
         denom = 1.0 - (PTDF_matrix[k, bus_i] - PTDF_matrix[k, bus_j])
         if abs(denom) >= 1e-5:  # Not radial
-            Ke += 1
+            active_Ke_list.append(int(branch_df.iloc[k]['line_ID']))
             
-    # 2. Extensive MILP Complexity Stats (For Table 1)
-    vars_base = N + 3*G + 2*E
-    vars_prov = 3 * Kg * G
-    vars_kg = Kg * (1 + N + 2*E)
-    vars_ke = Ke * (N + 2*E)
-    total_continuous = vars_base + vars_prov + vars_kg + vars_ke
+    active_Kg_list = active_gen_df['gen_ID'].tolist()
     
-    total_binary = Kg * G
+    # Create a generic base load vector
+    load_vector = {b: bus_df.loc[bus_df['bus_i'] == b, 'Pd'].values[0] for b in bus_list}
     
-    cons_base = 3*E + 2*G + N + 1
-    cons_prov = 2*Kg + 3*Kg*G
-    cons_kg = Kg * (4*G + 3*E + N + 1)
-    cons_ke = Ke * (3*E + N + 1)
-    total_constraints = cons_base + cons_prov + cons_kg + cons_ke
+    print(f"\nBuilding Extensive SCOPF Pyomo Model (|Kg|={len(active_Kg_list)}, |Ke|={len(active_Ke_list)})...")
+    print("Handing to Gurobi for Presolve analysis (Time Limit: 1s)...")
+    
+    log_filename = f"gurobi_presolve_{case_name}.log"
+    
+    try:
+        build_and_solve_ccga_master(
+            bus_df, active_gen_df, branch_df, case['gencost'], load_vector, 
+            active_Kg_list, active_Ke_list, baseMVA, 
+            time_limit=1, log_file=log_filename
+        )
+    except Exception as e:
+        print(f"\n[Note] Solver execution interrupted (Expected if hitting 1s TimeLimit).")
+        print(f"Message: {e}\n")
 
-    # 3. Print Results
-    print("\n" + "="*80)
-    print(" TOPOLOGICAL NETWORK STATISTICS (For the Image Table)")
-    print("="*80)
-    print(f"{'Test Case':<15} | {'|N|':<5} | {'|G|':<5} | {'|L|':<5} | {'|E|':<5} | {'|Kg|':<5} | {'|Ke|':<5}")
-    print("-" * 65)
-    print(f"{case_name:<15} | {N:<5} | {G:<5} | {L:<5} | {E:<5} | {Kg:<5} | {Ke:<5}")
+    # Parse the Gurobi Log File
+    with open(log_filename, 'r') as f:
+        log_text = f.read()
+
+    # Regex to find Before Presolve Stats
+    rows_match = re.search(r'Optimize a model with (\d+) rows', log_text)
+    vars_match = re.search(r'Variable types: (\d+) continuous, \d+ integer \((\d+) binary\)', log_text)
     
-    print("\n" + "="*80)
-    print(" EXTENSIVE SCOPF FORMULATION SIZE (For LaTeX Table 1)")
-    print("="*80)
-    print(f"{'Test Case':<15} | {'Continuous Vars':<18} | {'Binary Vars':<15} | {'Linear Constraints':<18}")
-    print("-" * 75)
-    print(f"{case_name:<15} | {total_continuous:<18,d} | {total_binary:<15,d} | {total_constraints:<18,d}")
-    print("="*80 + "\n")    
+    # Regex to find After Presolve Stats
+    presolved_match = re.search(r'Presolved: (\d+) rows, (\d+) columns', log_text)
+    
+    if rows_match and vars_match and presolved_match:
+        before_cnst = int(rows_match.group(1))
+        before_cv = int(vars_match.group(1))
+        bv = int(vars_match.group(2)) # Binary variables usually don't get presolved away in this problem
+        
+        after_cnst = int(presolved_match.group(1))
+        after_total_vars = int(presolved_match.group(2))
+        after_cv = after_total_vars - bv
+        
+        print("\n" + "="*80)
+        print(" TABLE II: EXTENSIVE SCOPF STATISTICS (Before and After Presolve)")
+        print("="*80)
+        print(f"{'':<15} | {'--- BEFORE PRESOLVE ---':<28} | {'--- AFTER PRESOLVE ---'}")
+        print(f"{'Test Case':<15} | {'#CV':<8} | {'#BV':<8} | {'#Cnst':<8} | {'#CV':<8} | {'#BV':<8} | {'#Cnst':<8}")
+        print("-" * 80)
+        
+        # Format like the paper (e.g., 44.5k)
+        print(f"{case_name:<15} | {before_cv/1000:>6.1f}k | {bv/1000:>6.1f}k | {before_cnst/1000:>6.1f}k "
+              f"| {after_cv/1000:>6.1f}k | {bv/1000:>6.1f}k | {after_cnst/1000:>6.1f}k")
+        print("="*80 + "\n")
+    else:
+        print("Error: Could not parse Gurobi log file. Please check gurobi_presolve.log")
+        
+    # Clean up log file
+    if os.path.exists(log_filename):
+        os.remove(log_filename)
