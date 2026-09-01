@@ -308,7 +308,8 @@ def build_and_solve_ccga_master(bus_df, gen_df, branch_df, cost_df, load_vector,
     # --- SOLVE ---
     solver = pyo.SolverFactory('gurobi')
     if time_limit:
-        solver.options['TimeLimit'] = time_limit
+        solver.options['TimeLimit'] = 60 # Give it plenty of time to read the file
+        solver.options['NodeLimit'] = 0  # FORCE it to stop immediately after Presolve!
         
     # Pyomo handles log files natively via the solve() method, not solver options!
     results = solver.solve(model, tee=(log_file is not None), logfile=log_file)
@@ -318,7 +319,7 @@ def build_and_solve_ccga_master(bus_df, gen_df, branch_df, cost_df, load_vector,
             return {}, TerminationCondition.maxTimeLimit
         raise ValueError(f"Model mathematically infeasible. Check grid data format.")
         
-    # If we hit the time limit, there won't be a solution to load, which is fine for the log test.
+    # If we hit the limit, there won't be a solution to load, which is fine for the log test.
     if time_limit and len(model.Pg) > 0 and pyo.value(model.Pg[model.Gens.first()], exception=False) is None:
         return {}, TerminationCondition.maxTimeLimit
 
