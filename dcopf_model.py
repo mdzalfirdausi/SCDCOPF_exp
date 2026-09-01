@@ -308,7 +308,7 @@ def build_and_solve_ccga_master(bus_df, gen_df, branch_df, cost_df, load_vector,
     # --- SOLVE ---
     solver = pyo.SolverFactory('gurobi')
     if time_limit:
-        solver.options['TimeLimit'] = 60 # Give it plenty of time to read the file
+        solver.options['TimeLimit'] = 300 # Give it plenty of time to read the file
         solver.options['NodeLimit'] = 0  # FORCE it to stop immediately after Presolve!
         
     # Pyomo handles log files natively via the solve() method, not solver options!
