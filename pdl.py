@@ -14,11 +14,11 @@ from torch_geometric.nn import GCNConv, global_mean_pool
 from dcopf_model import build_ptdf, build_lodf
 
 # ==========================================
-# 1. DIFFERENTIABLE PHYSICS LAYERS[cite: 6]
+# 1. DIFFERENTIABLE PHYSICS LAYERS
 # ==========================================
 
 def power_balance_repair_layer(g_raw, d_total, pmin, pmax):
-    """Ensures the base-case dispatch perfectly meets demand."""
+    """Ensures the base-case dispatch perfectly meets demand[cite: 6]."""
     g_total = g_raw.sum(dim=1, keepdim=True)
     pmax_total = pmax.sum(dim=1, keepdim=True)
     pmin_total = pmin.sum(dim=1, keepdim=True)
@@ -34,10 +34,38 @@ def power_balance_repair_layer(g_raw, d_total, pmin, pmax):
     )
     return g_repaired
 
+def differentiable_apr_layer(g_star, d_total, pmax, gamma):
+    """
+    Computes generator contingency dispatches exactly (Eq 16 from 2025 PDL paper).
+    Replaces the non-differentiable binary search with a closed-form algebraic solution.
+    """
+    batch_size, num_gens = g_star.shape
+    
+    # 1. Available reserve per generator: gamma_i * (Pmax_i - g*_i)
+    delta = gamma * (pmax - g_star) 
+    total_delta = delta.sum(dim=1, keepdim=True)
+    
+    # 2. Reserve available when generator k is outaged
+    reserve_k = total_delta - delta 
+    
+    # 3. Compute required system signal (n_k) algebraically
+    n_k_raw = g_star / (reserve_k + 1e-9)
+    
+    # 4. LEAKY CLAMP: Prevents the Zero-Gradient Trap!
+    # If the network needs n_k > 1.0, we softly clamp it so gradients can still flow back to g_star
+    n_k = torch.where(n_k_raw > 1.0, 1.0 + 0.1 * (n_k_raw - 1.0), n_k_raw)
+    
+    # 5. Compute contingency dispatches
+    g_prov = g_star.unsqueeze(1) + n_k.unsqueeze(2) * delta.unsqueeze(1)
+    
+    # 6. Mask out the failed generator
+    mask = torch.eye(num_gens, device=g_star.device).bool().unsqueeze(0)
+    g_k = g_prov.masked_fill(mask, 0.0)
+    
+    return g_k
+
 def compute_physics_loss(g_star, d_bus, c1, c0, PTDF, LODF, f_max, pmax, gamma, bus_gen_map):
-    """
-    Computes ALM Constraint Mismatches (h_x) and Soft Slack Violations.
-    """
+    """Computes ALM Constraint Mismatches (h_x) and Soft Slack Violations."""
     batch_size, num_gens = g_star.shape
     M_eta = 1500.0 # Heavy penalty for soft thermal limits
     d_total = d_bus.sum(dim=1, keepdim=True)
@@ -51,40 +79,10 @@ def compute_physics_loss(g_star, d_bus, c1, c0, PTDF, LODF, f_max, pmax, gamma, 
     # 2. LINE CONTINGENCY PHYSICS (Ke)
     f_star_outaged = f_star.unsqueeze(1) 
     f_k_e = f_star.unsqueeze(2) + LODF.unsqueeze(0) * f_star_outaged 
-    
-    # FIX: Use .view(1, -1, 1) to broadcast the 1D tensor to [1, E, 1]
     eta_k_e = F.relu(torch.abs(f_k_e) - f_max.view(1, -1, 1))
     
     # 3. GENERATOR CONTINGENCY PHYSICS (Kg) & ALM MISMATCH
-    # Binary Search Layer logic (APR limits)
-    n_low = torch.zeros(batch_size, num_gens, 1, device=g_star.device)
-    n_high = torch.ones(batch_size, num_gens, 1, device=g_star.device)
-    n_k = torch.full((batch_size, num_gens, 1), 0.5, device=g_star.device)
-    droop_slope = gamma * pmax 
-    
-    for _ in range(20):
-        g_prov = g_star.unsqueeze(1) + n_k * droop_slope.unsqueeze(1)
-        
-        # FIX: Clamp the floor to 0.0, then take the element-wise minimum with Pmax
-        g_k = torch.min(g_prov.clamp(min=0.0), pmax.unsqueeze(1))
-        
-        mask = torch.eye(num_gens, device=g_star.device).bool().unsqueeze(0)
-        g_k = g_k.masked_fill(mask, 0.0)
-        
-        current_generation = g_k.sum(dim=2, keepdim=True)
-        mismatch = current_generation - d_total.unsqueeze(1)
-        
-        n_low = torch.where(mismatch < 0, n_k, n_low)
-        n_high = torch.where(mismatch > 0, n_k, n_high)
-        n_k = (n_low + n_high) / 2.0
-
-    # Final forward pass for g_k
-    g_prov = g_star.unsqueeze(1) + n_k * droop_slope.unsqueeze(1)
-    
-    # FIX: Apply the same separated bounds logic here
-    g_k = torch.min(g_prov.clamp(min=0.0), pmax.unsqueeze(1))
-    
-    g_k = g_k.masked_fill(mask, 0.0)
+    g_k = differentiable_apr_layer(g_star, d_total, pmax, gamma)
     
     # h_x(y): Exact Power Balance Mismatch under Generator Contingencies[cite: 6]
     h_x = (g_k.sum(dim=2) - d_total) # Shape: (Batch, Kg)
@@ -92,8 +90,6 @@ def compute_physics_loss(g_star, d_bus, c1, c0, PTDF, LODF, f_max, pmax, gamma, 
     g_k_bus = torch.matmul(g_k, bus_gen_map.T) 
     net_injections_k = g_k_bus - d_bus.unsqueeze(1) 
     f_k_g = torch.matmul(net_injections_k, PTDF.T) 
-    
-    # FIX: Just use f_max directly. PyTorch naturally broadcasts [E] to [B, Kg, E]
     eta_k_g = F.relu(torch.abs(f_k_g) - f_max)
     
     gen_cost = torch.sum(c1 * g_star + c0, dim=1)
@@ -114,7 +110,7 @@ class PDLPrimalNet(nn.Module):
         self.conv2 = GCNConv(64, 128)
         self.fc1 = nn.Linear(128, 256)
         self.fc2 = nn.Linear(256, num_gens)
-        self.layer_norm = nn.LayerNorm(128) # Added per 2025 PDL architecture guidelines[cite: 6]
+        self.layer_norm = nn.LayerNorm(128) 
 
     def forward(self, x, edge_index, batch, pmin, pmax):
         h = F.leaky_relu(self.conv1(x, edge_index), 0.1)
@@ -126,13 +122,13 @@ class PDLPrimalNet(nn.Module):
         return pmin + out_scaled * (pmax - pmin)
 
 class PDLDualNet(nn.Module):
-    """Predicts the Lagrangian Multipliers (lambda) for generator contingencies."""
+    """Predicts the Lagrangian Multipliers (lambda) for generator contingencies[cite: 6]."""
     def __init__(self, num_node_features, num_kg):
         super(PDLDualNet, self).__init__()
         self.conv1 = GCNConv(num_node_features, 64)
         self.conv2 = GCNConv(64, 128)
         self.fc1 = nn.Linear(128, 256)
-        self.fc2 = nn.Linear(256, num_kg) # Outputs 1 multiplier per generator contingency
+        self.fc2 = nn.Linear(256, num_kg) 
 
     def forward(self, x, edge_index, batch):
         h = F.leaky_relu(self.conv1(x, edge_index), 0.1)
@@ -140,7 +136,7 @@ class PDLDualNet(nn.Module):
         h_graph = global_mean_pool(h, batch)
         
         h_fc = F.leaky_relu(self.fc1(h_graph), 0.1)
-        return self.fc2(h_fc) # Lambda can be positive or negative
+        return self.fc2(h_fc) 
 
 
 # ==========================================
@@ -209,15 +205,12 @@ def train_pdl_scopf(case_name, outer_K=20, inner_L=100, batch_size=32):
     if not os.path.exists(csv_path):
         csv_path = f"data/{case_name}_generated_loads.csv"
         
-    # Read the CSV as a DataFrame first
+    # Read the CSV and dynamically grab ONLY the Pd columns
     df_csv = pd.read_csv(csv_path)
-    
-    # Extract ONLY the active load (Pd) columns in the exact order of the bus list
     pd_cols = [f"Bus_{b}_Pd" for b in bus_list]
     if all(col in df_csv.columns for col in pd_cols):
         load_data_np = df_csv[pd_cols].values / baseMVA
     else:
-        # Fallback if using older CSV formats: grab just the first N columns
         load_data_np = df_csv.iloc[:, :len(bus_list)].values / baseMVA
         
     dataset = create_pdl_dataset(case, load_data_np, baseMVA)
@@ -240,7 +233,7 @@ def train_pdl_scopf(case_name, outer_K=20, inner_L=100, batch_size=32):
     print("\nStarting PDL Training (Augmented Lagrangian Method)...")
     for k in range(outer_K):
         
-        # --- 1. PRIMAL LEARNING PHASE ---
+        # --- 1. PRIMAL LEARNING PHASE[cite: 6] ---
         net_P.train()
         net_D.eval()
         for _ in range(inner_L):
@@ -256,10 +249,10 @@ def train_pdl_scopf(case_name, outer_K=20, inner_L=100, batch_size=32):
                     g_star, d_bus, c1, c0, PTDF, LODF, f_max, pmax, gamma, bus_gen_map
                 )
                 
-                # Get Lagrange Multipliers (Detached so gradients don't flow to Dual Net)
+                # Get Lagrange Multipliers (Detached)
                 lambdas = net_D(batch.x, batch.edge_index, batch.batch).detach()
                 
-                # ALM Primal Loss[cite: 6]
+                # ALM Primal Loss
                 alm_linear = torch.sum(lambdas * h_x, dim=1)
                 alm_quad = torch.sum((rho / 2.0) * (h_x ** 2), dim=1)
                 
@@ -267,12 +260,12 @@ def train_pdl_scopf(case_name, outer_K=20, inner_L=100, batch_size=32):
                 loss_P.backward()
                 opt_P.step()
                 
-        # --- 2. DUAL LEARNING PHASE ---
+        # --- 2. DUAL LEARNING PHASE[cite: 6] ---
         net_P.eval()
         net_D.train()
-        net_D_frozen = copy.deepcopy(net_D) # Fixed network for Lagrangian tracking[cite: 6]
+        net_D_frozen = copy.deepcopy(net_D) 
         
-        max_h_x_violation = 0.0 # Track for rho update
+        max_h_x_violation = 0.0 
         
         for _ in range(inner_L):
             for batch in dataloader:
@@ -286,20 +279,17 @@ def train_pdl_scopf(case_name, outer_K=20, inner_L=100, batch_size=32):
                     _, _, h_x = compute_physics_loss(g_star, d_bus, c1, c0, PTDF, LODF, f_max, pmax, gamma, bus_gen_map)
                     
                     lambda_k = net_D_frozen(batch.x, batch.edge_index, batch.batch)
-                    
                     max_h_x_violation = max(max_h_x_violation, torch.max(torch.abs(h_x)).item())
 
                 # ALM Dual Update Target[cite: 6]
                 lambda_est = net_D(batch.x, batch.edge_index, batch.batch)
-                
-                # The dual penalty coefficient is fixed at 1e-1[cite: 6]
                 target = (lambda_k + 0.1 * h_x).detach()
                 loss_D = F.mse_loss(lambda_est, target)
                 
                 loss_D.backward()
                 opt_D.step()
 
-        # --- 3. DYNAMIC PENALTY UPDATE ---
+        # --- 3. DYNAMIC PENALTY UPDATE[cite: 6] ---
         v_k = max_h_x_violation
         if v_k > tau * v_prev:
             rho = min(alpha * rho, rho_max)
@@ -317,5 +307,4 @@ if __name__ == "__main__":
     parser.add_argument('--case', type=str, required=True, help="e.g., pglib_opf_case300_ieee")
     args = parser.parse_args()
     
-    # Outer_K = 20, Inner_L = 2000 (Adjusted default for practical dataset scaling)
-    train_pdl_scopf(args.case, outer_K=20, inner_L=5, batch_size=32)
+    train_pdl_scopf(args.case, outer_K=20, inner_L=100, batch_size=32)
