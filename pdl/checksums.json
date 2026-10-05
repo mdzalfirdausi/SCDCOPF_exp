@@ -1,0 +1,13 @@
+{
+  "README.md": "90da2cb5e94ad8f2bdac2d133df7aa314ac748218cccc7d2bdb892a810591ee3",
+  "VALIDATION.md": "88c01ac2aa8eafaf60db668ae69bf27bf2b20cdfc221202c37fc7a42fa74e644",
+  "aggregate.py": "47c60f279276ae789177b46f3557219689006bff84472f244044ee8d96c48507",
+  "case_data.py": "d975bb1763cb724dfe73757dc90fa62adaa1a97320521d4c85348bbe3d6f54c2",
+  "examples/synthetic3.m": "4e442cd80117e5df7ed582b64e9bff9d652e8bff357ae7bf0a95c60d8e7f7057",
+  "learning.py": "79103e6ad14641dfe53139ad411c63ad76856d5b9ed97c54af845b655cb9e25d",
+  "reference.py": "0e6b3faa71e03fa262d760f8eb033bfc5196b90d3a043225e42d089ba4249b28",
+  "requirements.txt": "ac345175d1d1dbf802b1d9be4caa38a2cd5ff9fc8c82ccdc88c4ef9125650a19",
+  "run.py": "44a3d09acf81631357a3cc6fd93db208a1d6b9ecf05c25a2a6e06f1bf12ff413",
+  "smoke.py": "ab55c81a233e462657d67ff90c3ba44f8e13532532688cb2e172dc239055047e",
+  "test_reproduction.py": "049a9d3a3889275b99cd632c7a349a9c02b245db582647392eac15094fc9e009"
+}
